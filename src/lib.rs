@@ -1,0 +1,112 @@
+pub mod cli;
+pub mod commands;
+pub mod config;
+pub mod create;
+pub mod docs;
+pub mod error;
+pub mod git;
+pub mod name;
+pub mod remove;
+pub mod repo;
+pub mod shell;
+pub mod ui;
+pub mod workspace;
+
+use std::str::FromStr;
+
+use cli::{AgentCommand, Cli, Command};
+use config::FlagOverrides;
+use error::{Error, Result};
+use git::Git;
+use name::WorktreeName;
+use repo::Repo;
+use ui::Ui;
+use workspace::Workspace;
+
+pub fn run(cli: Cli) -> Result<i32> {
+    let ui = Ui::new(cli.quiet);
+
+    // `shell` and `agent` print static text and must work outside a
+    // repository, so they are answered before anything is discovered.
+    match &cli.command {
+        Command::Shell(args) => {
+            ui.emit(shell::wrapper(args.shell));
+            return Ok(0);
+        }
+        Command::Agent(args) => {
+            return match args.command {
+                Some(AgentCommand::Skill) => {
+                    ui.emit(docs::skill());
+                    Ok(0)
+                }
+                None => Err(Error::usage("usage: wtm agent skill")),
+            };
+        }
+        _ => {}
+    }
+
+    // Build order: the repository locates the project configuration, and the
+    // configuration locates the data root.
+    let git = Git::new()?;
+    let from = match cli.repo.clone() {
+        Some(path) => path,
+        None => std::env::current_dir().map_err(|e| Error::io("current directory", e))?,
+    };
+    let repo = Repo::discover(&git, &from)?;
+    let config = config::load(
+        &flags(&cli),
+        &|key| std::env::var(key).ok(),
+        Some(&config::project_config_file(&repo.main)),
+        Some(&config::global_config_file()),
+    )?;
+    let workspace = Workspace::new(repo, workspace::canonical_root(&config.dir.value));
+
+    match cli.command {
+        Command::New(args) => {
+            create::run(
+                &git,
+                &ui,
+                &workspace,
+                &config,
+                WorktreeName::from_str(&args.name)?,
+                args.branch.as_deref(),
+            )?;
+            Ok(0)
+        }
+        Command::Ls(args) => commands::ls(&git, &ui, &workspace, args.json.json),
+        Command::Cd(args) => commands::cd(&ui, &workspace, args.name.as_deref()),
+        Command::Rm(args) => {
+            let options = remove::Options {
+                force: args.force,
+                delete_branch: args.delete_branch,
+                force_delete_branch: args.force_delete_branch,
+            };
+            remove::remove(
+                &git,
+                &ui,
+                &workspace,
+                &WorktreeName::from_str(&args.name)?,
+                &options,
+            )
+        }
+        Command::Doctor(args) => commands::doctor(&git, &ui, &workspace, args.json),
+        Command::Config(args) => commands::config(&ui, &config, args.json),
+        Command::Init(_) => Err(Error::NotImplemented("wtm init")),
+        Command::Gc(_) => Err(Error::NotImplemented("wtm gc")),
+        Command::Shell(_) | Command::Agent(_) => unreachable!("answered above"),
+    }
+}
+
+/// Command-line values that correspond to configuration keys, collected into
+/// the highest-precedence layer of the merge.
+fn flags(cli: &Cli) -> FlagOverrides {
+    let mut flags = FlagOverrides {
+        dir: cli.dir.clone(),
+        ..Default::default()
+    };
+    if let Command::New(args) = &cli.command {
+        flags.base = args.base.clone();
+        flags.fetch = args.fetch.then_some(true);
+    }
+    flags
+}

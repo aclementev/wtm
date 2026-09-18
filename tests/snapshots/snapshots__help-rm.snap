@@ -1,0 +1,20 @@
+---
+source: tests/snapshots.rs
+expression: "run(&[command, \"--help\"])"
+---
+Remove a worktree
+
+Usage: wtm rm [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  Worktree to remove
+
+Options:
+      --force                Remove even when the worktree has uncommitted changes
+      --repo <PATH>          Operate on the repository at this path instead of the current directory
+      --dir <PATH>           Data root holding the worktrees
+      --wait                 Unlink synchronously instead of returning as soon as the path is gone
+  -d, --delete-branch        Delete the branch too, refusing if it is unmerged
+  -q, --quiet                Silence progress messages
+  -D, --force-delete-branch  Delete the branch too, even if it is unmerged
+  -h, --help                 Print help

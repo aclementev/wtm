@@ -18,25 +18,36 @@ hands. Names are binding unless a good reason is recorded in the code.
 - **Side effects are orchestrated in one place per command.** `create.rs`
   and `remove.rs` sequence the steps and own rollback; the modules they call
   are pure or single-purpose.
+- **Ask, then decide.** A command gathers what git and the filesystem say in
+  one step and applies its rules to that value in the next, so the rules are
+  pure functions over plain data and testable without a repository on disk.
+  Git re-enforces every rule when it runs; the checks exist for the message.
+- **A struct needs an invariant.** Types exist to make a bad state
+  unrepresentable (`WorktreeName`, `BranchState`) or to pair an operation
+  with its inverse (`Workspace`). A bundle of values that travel together is
+  a parameter list, not a type.
 - **Errors carry the exit code.** One error enum, `Error::exit_code()`,
   and `main` is the only place that prints an error and exits.
-- **No global state in the process.** No statics, no `lazy_static` config;
-  a `Context` value is built in `main` and passed down.
+- **No global state in the process.** No statics, no `lazy_static` config,
+  and no ambient context object: `run` builds `Git`, `Ui`, `Workspace` and
+  `Config` in that order and hands each function the ones it uses. A
+  signature naming four of them is reporting that the command touches four
+  things, which is worth seeing.
 
 ## 2. Module map
 
 ```
 src/
-  main.rs         clap definitions, dispatch, exit-code mapping. Help and skill prose (docs.rs data) live next to the flags.
+  main.rs         parse, call `run`, print the error, map the exit code. Nothing else.
+  lib.rs          `run`: dispatch, and the four lines that build git, repo, config and workspace
   cli.rs          clap structs: `Cli`, `Command`, per-command arg structs. No logic.
-  context.rs      `Context { config, ui, git, layout, clock }` built once from cli + env + files
   config.rs       `Config`, `Setting<T>`, `Origin`, loading and precedence
-  ui.rs           `Ui`: progress/warn/error to stderr, `emit` to stdout, `--quiet`, `--json`
+  ui.rs           `Ui`: output policy. `emit` to stdout, progress/warn/relay to stderr, `--quiet`
   error.rs        `Error` enum (thiserror), `exit_code()`
-  git.rs          `Git` subprocess wrapper; typed helpers for the handful of commands wtm uses
-  repo.rs         `Repo` discovery from cwd/--repo; `RepoId`
+  git.rs          `Git` subprocess wrapper; `Oid`, `GitWorktree`; typed helpers for the handful of commands wtm uses
+  repo.rs         `Repo` discovery from cwd/--repo; `RepoId`; the derived `WorktreeView`
   name.rs         `WorktreeName` newtype and validation
-  layout.rs       `Layout`: paths under a data root; pure functions of (root, repo id, name)
+  workspace.rs    `Workspace`: a repo plus the data root. `dir` and its inverse `name_of`
   exclude.rs      `ExcludeSet` computation via git; `PathTrie` and `Class`
   clone/
     mod.rs        `Cloner` trait, `Walker`, `Method`, `MethodDecision`, probe
@@ -54,8 +65,8 @@ src/
   reaper.rs       detach (setsid, fds, priorities) and `sweep(roots)` with flock
   shell.rs        wrapper text per shell
   docs.rs         skill markdown generated from the clap command tree plus prose
-  commands/
-    ls.rs  gc.rs  doctor.rs  config_cmd.rs  init.rs  cd.rs   thin: build inputs, call modules, format output
+  commands.rs     `ls`, `cd`, `doctor`, `config`: thin, building inputs and formatting output.
+                  A command moves to its own file once it outgrows the shared one.
 ```
 
 Dependency direction: `commands/*` and `create/remove` depend on
@@ -101,29 +112,26 @@ impl WorktreeName {
 
 ```rust
 pub struct Repo {
-    pub main: PathBuf,        // canonical main worktree
+    pub main: PathBuf,        // canonical main worktree; the repository itself when bare
     pub common_dir: PathBuf,  // .git of the main worktree
     pub id: RepoId,
+    pub bare: bool,           // no working tree, so creation cannot clone
 }
 impl Repo {
     pub fn discover(git: &Git, from: &Path) -> Result<Repo>;   // works from inside any worktree
     pub fn worktrees(&self, git: &Git) -> Result<Vec<GitWorktree>>;   // `git worktree list --porcelain`
-    /// Git's metadata directory for a worktree. Git derives its name from the
-    /// basename of the worktree path and appends a digit on collision, so it is
-    /// NOT `<common_dir>/worktrees/<name>`. Always read back from git.
-    pub fn gitdir_for(&self, git: &Git, path: &Path) -> Result<PathBuf>;
 }
 
-pub struct GitWorktree { pub path: PathBuf, pub head: Oid, pub branch: Option<String>, pub detached: bool, pub locked: bool, pub prunable: bool }
+pub struct GitWorktree { pub path: PathBuf, pub head: Option<Oid>, pub branch: Option<String>,
+                         pub detached: bool, pub bare: bool, pub locked: bool, pub prunable: bool }
 
 /// Everything `wtm ls` shows, derived per DESIGN.md 2.2: no stored metadata.
-pub struct WorktreeView { pub git: GitWorktree, pub name: WorktreeName, pub created: Option<SystemTime>, pub base: Option<Oid>, pub missing: bool }
-pub fn view(git: &Git, repo: &Repo, layout: &Layout) -> Result<Vec<WorktreeView>>;
-/// Creation time: birth time of git's metadata dir for the worktree (mtime fallback).
-pub fn created_at(gitdir: &Path) -> Option<SystemTime>;
-/// Which repo a `<repo-id>` directory belongs to: read the `.git` file of any
-/// worktree inside it. Returns None for an orphaned or empty directory.
-pub fn repo_of_dir(git: &Git, repo_dir: &Path) -> Result<Option<PathBuf>>;
+/// `missing` and `locked` are not fields: git reports both in `GitWorktree`,
+/// and its judgement is better than stat'ing the path ourselves.
+pub struct WorktreeView { pub git: GitWorktree, pub name: WorktreeName, pub created: Option<SystemTime>, pub base: Option<Oid> }
+pub fn view(git: &Git, workspace: &Workspace) -> Result<Vec<WorktreeView>>;
+/// Creation time: birth time of the worktree directory (mtime fallback).
+pub fn created_at(worktree: &Path) -> Option<SystemTime>;
 
 pub struct Git { exe: PathBuf, version: GitVersion }
 impl Git {
@@ -134,7 +142,11 @@ impl Git {
     pub fn run_z(&self, cwd: &Path, args: &[&str]) -> Result<Vec<Vec<u8>>>;   // NUL-separated stdout
     pub fn rev_parse(&self, cwd: &Path, rev: &str) -> Result<Oid>;
     pub fn status_is_clean(&self, cwd: &Path) -> Result<bool>;
-    pub fn in_progress_operation(&self, gitdir: &Path) -> Option<&'static str>;  // "rebase", "merge", ...
+    pub fn in_progress_operation(gitdir: &Path) -> Option<&'static str>;  // "rebase", "merge", ...
+    /// Git's metadata directory for a worktree. Git derives its name from the
+    /// basename of the worktree path and appends a digit on collision, so it is
+    /// NOT `<common_dir>/worktrees/<name>`. Always read back from git.
+    pub fn gitdir_of(&self, worktree: &Path) -> Option<PathBuf>;
 }
 ```
 
@@ -144,20 +156,17 @@ impl Git {
 pub enum Origin { Flag, Env(String), Project(PathBuf), Global(PathBuf), Default }
 pub struct Setting<T> { pub value: T, pub origin: Origin }
 
+/// Four settings, each scoped to whoever owns the decision (DESIGN.md 3).
+/// Anything a caller decides per invocation is a flag, not a setting.
 pub struct Config {
-    pub dir: Setting<PathBuf>,
-    pub init: Setting<PathBuf>,
-    pub base: Setting<String>,
-    pub branch_prefix: Setting<String>,
-    pub fetch: Setting<bool>,
-    pub include: Setting<PathBuf>,
-    pub clone_mode: Setting<CloneMode>,
-    pub clone_workers: Setting<usize>,
-    pub rm_wait: Setting<bool>,
+    pub dir: Setting<PathBuf>,            // flag, env, global
+    pub base: Setting<String>,            // flag, env, project
+    pub branch_prefix: Setting<String>,   //       env, global
+    pub fetch: Setting<bool>,             // flag, env, global
 }
-pub enum CloneMode { Auto, Cow, Checkout }
 
-/// Layers are merged key by key; `flags` is whatever the command parsed.
+/// Layers are merged key by key, each key seeing only the layers it accepts;
+/// a project file that sets a personal key is rejected naming file and key.
 pub fn load(flags: &FlagOverrides, env: &dyn Fn(&str) -> Option<String>,
             project_file: Option<&Path>, global_file: Option<&Path>) -> Result<Config>;
 ```
@@ -165,15 +174,29 @@ pub fn load(flags: &FlagOverrides, env: &dyn Fn(&str) -> Option<String>,
 `RawConfig` (serde, all fields `Option`) is the file shape; unknown keys
 are rejected with `deny_unknown_fields`.
 
-### 3.4 Layout
+`Context::build` replaces `config.dir` with its resolved form: git reports
+worktree paths with symlinks resolved, and `Layout::name_of` decides whether
+a worktree is ours by prefix-matching the data root against them.
+
+### 3.4 Workspace
 
 ```rust
-pub struct Layout { root: PathBuf }
-impl Layout {
-    pub fn repo_dir(&self, id: &RepoId) -> PathBuf;
-    pub fn worktree_dir(&self, id: &RepoId, name: &WorktreeName) -> PathBuf;
-    pub fn trash_dir(&self, id: &RepoId) -> PathBuf;
+/// Where one repository's worktrees live. `name_of` is the inverse of `dir`,
+/// and that pair is how "which worktrees are ours" is answered without a
+/// registry, so the two are defined together.
+pub struct Workspace { pub repo: Repo, root: PathBuf }
+impl Workspace {
+    pub fn new(repo: Repo, root: PathBuf) -> Workspace;
+    pub fn root(&self) -> &Path;             // only `ls --all` and `gc` range over repos
+    pub fn repo_dir(&self) -> PathBuf;
+    pub fn dir(&self, name: &WorktreeName) -> PathBuf;
+    pub fn trash(&self) -> PathBuf;
+    pub fn name_of(&self, path: &Path) -> Option<WorktreeName>;
 }
+
+/// The root is canonicalized before use: git reports worktree paths with
+/// symlinks resolved, and `name_of` prefix-matches against them.
+pub fn canonical_root(root: &Path) -> PathBuf;
 ```
 
 `wtm` persists nothing else. There is no `state.rs`, no registry, no lock
@@ -256,17 +279,38 @@ pub fn install(index: &Index, gitdir: &Path) -> Result<()>;            // temp f
 ### 3.8 Creation, removal, reaping
 
 ```rust
-pub struct CreateRequest { pub name: WorktreeName, pub branch: String, pub base: String, pub source: PathBuf, pub run_init: bool, pub fetch: bool }
-pub struct Created { pub path: PathBuf, pub method: Method, pub init: InitStatus }
-pub fn create(ctx: &Context, repo: &Repo, req: CreateRequest) -> Result<Created>;
+/// What was asked for, with configuration folded in. Nothing downstream of
+/// `derive` reads a setting.
+pub struct Request { pub dest: PathBuf, pub branch: String,
+                     pub base_spec: String, pub workers: usize, pub fetch: bool }
+
+/// What git and the filesystem say about a `Request`. Asked in one place.
+pub struct Observed { pub source_head: Option<Oid>, pub base: Option<Oid>,
+                      pub branch: BranchState, pub in_progress: Option<&'static str>,
+                      pub dest_exists: bool }
+
+/// The three cases of DESIGN.md 4.1. As an enum rather than a flag beside an
+/// optional path, "absent but checked out somewhere" cannot be expressed.
+pub enum BranchState { Absent, Free, CheckedOut(PathBuf) }
+
+/// What will be done. Nothing optional, so acting needs no unwrapping.
+pub struct Plan { pub source_head: Oid, pub branch: BranchAction }
+pub enum BranchAction { Create { base: Oid }, Reuse }
+
+pub fn derive(ws: &Workspace, config: &Config, name: WorktreeName,
+              branch: Option<&str>) -> Result<Request>;                       // pure
+pub fn observe(git: &Git, ws: &Workspace, req: &Request) -> Result<Observed>;
+pub fn check(req: &Request, obs: &Observed) -> Result<Plan>;                  // pure
+pub fn run(git: &Git, ui: &Ui, ws: &Workspace, config: &Config, name: WorktreeName,
+           branch: Option<&str>) -> Result<()>;
 
 /// Undo list for a failed creation. Each step that makes something pushes a
 /// closure; `disarm()` on success. Drop runs the closures in reverse.
 struct Rollback { steps: Vec<Box<dyn FnOnce()>>, armed: bool }
 
-pub struct RemoveRequest { pub name: WorktreeName, pub force: bool, pub wait: bool, pub delete_branch: Option<BranchDelete> }
-pub enum BranchDelete { IfMerged, Force }
-pub fn remove(ctx: &Context, repo: &Repo, req: RemoveRequest) -> Result<()>;
+pub struct Options { pub force: bool, pub delete_branch: bool, pub force_delete_branch: bool }
+pub fn remove(git: &Git, ui: &Ui, ws: &Workspace, name: &WorktreeName,
+              options: &Options) -> Result<i32>;
 pub fn delete_tree_sync(path: &Path) -> Result<Vec<PathBuf>>;   // returns paths it could not remove
 
 pub fn spawn_detached_reaper(exe: &Path, trash: &Path) -> Result<()>;
@@ -277,7 +321,9 @@ pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> Result<SweepStats>;
 ### 3.9 Hook
 
 ```rust
-pub struct HookEnv { pub root, name, branch, base, base_sha, source, main, repo_id, method }
+/// Exported as `WTM_HOOK_*`. The prefix separates output-to-a-hook from the
+/// `WTM_<KEY>` names that are input-to-wtm; see DESIGN.md 7.
+pub struct HookEnv { pub root, name, branch, base_ref, base_sha, main, repo_id, method }
 /// Outcome of the hook. Returned to the caller, reported immediately by
 /// `ui` and the exit code, and never written to disk (DESIGN.md 2.2).
 pub enum InitStatus { Ok, Failed { exit_code: i32 }, Skipped }
@@ -308,18 +354,32 @@ impl Error { pub fn exit_code(&self) -> i32; }
 
 ## 4. Control flow of `wtm new` (for orientation)
 
+Four steps, of which only the second and fourth touch the outside world.
+
 ```
-main -> cli parse -> Context::build -> Repo::discover
-  -> config::load -> WorktreeName::from_str -> resolve base and branch
-  -> preflight (in-progress op, sparse, dest exists, branch rules)
-  -> clone::decide -> git worktree add --no-checkout --detach
-  -> Rollback armed
-  -> if Cow: ExcludeSet::compute -> Walker::run -> index::{parse, rewrite_stat, install} -> empty submodules -> git reset --hard
-     else:   git checkout --detach with workers
-  -> git checkout -b
-  -> hook::resolve -> hook::run
-  -> Rollback::disarm -> ui.emit(path) -> exit code from InitStatus
+run -> Git::new -> Repo::discover -> config::load -> Workspace::new
+  -> create::run
+
+     derive   (pure)  args + config      -> Request { dest, branch, base_spec, workers, fetch }
+     fetch    (io)    only when asked, before observing, so the base is fresh
+     observe  (io)    every git and filesystem question, asked once
+                      -> Observed { source_head, base, branch: BranchState, in_progress, dest_exists }
+     check    (pure)  the preconditions of DESIGN.md 5
+                      -> Plan { source_head, branch: BranchAction::{Create{base}, Reuse} }
+     act      (io)    git worktree add --no-checkout --detach
+                      -> clone::decide -> if Cow: ExcludeSet::compute -> Walker::run
+                                          -> index::{parse, rewrite_stat, install}
+                                          -> empty submodules -> git reset --hard
+                         else:            git checkout --detach with workers
+                      -> git checkout -b
+                      -> hook::resolve -> hook::run
+                      -> on error: undo
+  -> ui.emit(path) -> exit code from InitStatus
 ```
+
+`check` is pure so that the rule set, which grows in every later feature,
+stays a table test. It is advisory: git enforces the same rules when it runs,
+and between `observe` and `act` another process may invalidate any of them.
 
 ## 5. Things an implementer must not do
 
@@ -329,9 +389,14 @@ main -> cli parse -> Context::build -> Repo::discover
 - Use `std::fs::rename` fallbacks that copy. On `EXDEV` do the synchronous
   delete.
 - Use `/tmp` in tests on macOS. It is a different volume from `$HOME`.
-- Read config from git config. Three sources are enough.
+- Read config from git config, or add a setting for something a caller
+  decides per invocation. A setting also needs a scope: if a repository
+  should not be able to impose it, it does not belong in the project layer.
 - Introduce a state file, a registry or a cache. Everything is derived
   (`DESIGN.md` 2.2); a new fact needs a new derivation.
 - Build git's metadata path by joining the worktree name (`ARCHITECTURE.md`
   3.2): git renames on collision.
-- Hold `Ui` or `Config` in statics.
+- Hold `Ui` or `Config` in statics, or reintroduce a context object that
+  every function takes and each function uses a third of.
+- Let `Config` reach past `derive` into the acting code. Configuration is
+  resolved once, into `Request`; nothing downstream reads a setting.

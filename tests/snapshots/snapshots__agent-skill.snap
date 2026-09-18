@@ -1,0 +1,128 @@
+---
+source: tests/snapshots.rs
+expression: "run(&[\"agent\", \"skill\"])"
+---
+---
+name: wtm
+description: Create, use and remove a dedicated git worktree for each task.
+---
+
+# wtm
+
+`wtm` gives every task its own full checkout of the repository. Work in a
+worktree, never in the main checkout: the main checkout is shared, and
+changing branches there disturbs everything else running against it.
+
+The loop for one task:
+
+```sh
+cd "$(wtm new fix-login)"
+# work, then commit
+wtm rm fix-login
+```
+
+`wtm new` prints exactly one line on stdout, the absolute path of the new
+worktree, which is what makes `cd "$(wtm new ...)"` safe. Progress, warnings
+and errors go to stderr. So do the outputs of every other command except the
+paths, lists and JSON they are asked for.
+
+`wtm rm` refuses a worktree with uncommitted changes and exits 4. Commit the
+work, or pass `--force` to discard it. Removal keeps the branch unless you
+pass `-d`.
+
+Run `wtm ls --json` to see what exists, with each worktree's branch, the
+commit it branched from, and its age.
+
+## Exit codes
+
+- `0` success
+- `1` failure
+- `2` usage error
+- `3` the worktree was created but its init hook failed; the path is still
+  printed and the worktree is usable
+- `4` refused because the worktree has uncommitted changes
+
+## Commands
+
+### `wtm new`
+
+Create a worktree and print its path.
+
+- `<name>`: Name of the worktree; also the branch name after branch_prefix
+- `--base`: Commit the new branch starts from
+- `--init`: Init hook to run, overriding the configured one
+- `--no-init`: Do not run the init hook
+- `--fetch`: Fetch the base's remote before creating
+- `--clone-mode`: How to populate the worktree
+- `--branch`: Branch name, when it differs from the worktree name
+- `--force`: Reuse a name whose directory is still in the trash
+
+### `wtm ls`
+
+List the worktrees of this repository.
+
+- `--json`: Emit JSON instead of text
+
+### `wtm cd`
+
+Print the path of a worktree.
+
+- `<name>`: Worktree to print; the main worktree when omitted
+
+### `wtm rm`
+
+Remove a worktree.
+
+- `<name>`: Worktree to remove
+- `--force`: Remove even when the worktree has uncommitted changes
+- `--wait`: Unlink synchronously instead of returning as soon as the path is gone
+- `--delete-branch`: Delete the branch too, refusing if it is unmerged
+- `--force-delete-branch`: Delete the branch too, even if it is unmerged
+
+### `wtm init`
+
+Rerun the init hook in a worktree.
+
+- `<name>`: Worktree to run the hook in; the current one when omitted
+- `--init`: Init hook to run, overriding the configured one
+
+### `wtm gc`
+
+Empty the trash and prune stale git metadata.
+
+- `--wait`: Sweep in the foreground instead of spawning a background reaper
+- `--orphans`: Delete directories whose repository is gone
+
+### `wtm doctor`
+
+Report on this repository, the data root and the creation method.
+
+- `--json`: Emit JSON instead of text
+
+### `wtm config`
+
+Print the effective configuration and where each value came from.
+
+- `--json`: Emit JSON instead of text
+
+### `wtm shell`
+
+Print a shell function that changes directory after `new` and `cd`.
+
+- `<shell>`: Shell to print a wrapper for
+
+### `wtm agent`
+
+Output for coding agents.
+
+## The init hook
+
+If the repository has a `wtm-init.sh`, it runs inside each new worktree after
+creation, with `WTM_HOOK_ROOT`, `WTM_HOOK_NAME`, `WTM_HOOK_BRANCH`,
+`WTM_HOOK_BASE_REF`, `WTM_HOOK_BASE_SHA`, `WTM_HOOK_MAIN`,
+`WTM_HOOK_REPO_ID` and `WTM_HOOK_METHOD` in its environment. Skip it with
+`--no-init`, rerun it with `wtm init`.
+
+Variables named `WTM_HOOK_*` describe the worktree to the hook. Variables
+named `WTM_<KEY>`, such as `WTM_DIR`, go the other way: they configure `wtm`
+itself, and setting one changes what later commands do.
