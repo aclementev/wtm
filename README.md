@@ -18,7 +18,7 @@ documented:
   the creation and removal algorithms, the hook contract
 - [ARCHITECTURE.md](ARCHITECTURE.md) — modules, key types and signatures
 - [TESTING.md](TESTING.md) — how correctness is verified
-- [PLAN.md](PLAN.md) — the implementation steps, in order
+- [PLAN.md](PLAN.md) — the six implementation features, in order
 
 The measurements behind the design (benchmarks against `git worktree add`
 on synthetic and real repositories, filesystem experiments, a survey of
