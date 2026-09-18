@@ -1,0 +1,22 @@
+---
+source: tests/snapshots.rs
+expression: "run(&[\"shell\", shell])"
+---
+wtm() {
+  case "$1" in
+    new|cd)
+      local out rc
+      out="$(command wtm "$@")"
+      rc=$?
+      if [ -d "$out" ]; then
+        cd "$out" || return $?
+      elif [ -n "$out" ]; then
+        printf '%s\n' "$out"
+      fi
+      return $rc
+      ;;
+    *)
+      command wtm "$@"
+      ;;
+  esac
+}

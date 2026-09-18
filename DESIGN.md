@@ -16,13 +16,19 @@ the same code paths. Windows is out of scope. Implementation language: Rust.
 
 - **repo**: a git repository. Its **main worktree** is the directory holding
   the real `.git` directory. `wtm` never modifies the main worktree's files.
+  A **bare** repository has no working tree; git reports the repository
+  directory in the main worktree's place, and `wtm` manages its linked
+  worktrees normally. Nothing can be cloned from a repository with no files,
+  so creation there always takes the checkout path (section 6.2).
 - **worktree**: a linked git worktree created by `wtm`, one per task. It has
   a full working tree: every tracked file is present and readable. No sparse
   checkout, ever.
 - **source**: the existing worktree whose files are cloned to make a new
-  one. Default: the main worktree. Override: `--from`.
+  one. Always the main worktree in v1; `--from` is listed in section 14.
 - **base**: the commit the new branch starts from. Default: the remote
-  default branch (`origin/HEAD`, resolved). Override: `--base`.
+  default branch (`origin/HEAD`, resolved). A repository with no remote
+  falls back to `origin/main`, `origin/master`, then the main worktree's
+  current branch. Override: `--base`.
 - **clone**: a copy-on-write copy at the filesystem level: `clonefile(2)` on
   APFS, `ioctl(FICLONE)` (a "reflink") on Linux. Both share data blocks
   until written. Never confuse with `git clone`.
@@ -78,7 +84,7 @@ fact that is not in it.
 | which worktrees exist, with branch and head | `git worktree list --porcelain` |
 | which of them are ours | their path is under the data root |
 | which repo a `<repo-id>` directory belongs to | the `gitdir:` line of the `.git` file in any worktree inside it, or `git rev-parse --git-common-dir` run there |
-| when a worktree was created | birth time (`st_birthtime`, `statx` `STATX_BTIME`) of git's metadata directory for it, which git creates at `worktree add` and nothing routinely touches; fall back to mtime where birth time is unavailable |
+| when a worktree was created | birth time (`st_birthtime`, `statx` `STATX_BTIME`) of the worktree directory, which git creates at `worktree add`. Where the filesystem has no birth time this falls back to mtime, which moves on any top-level write, so the age is unreliable there; every filesystem wtm targets has birth times |
 | what a worktree branched from | `git merge-base <head> <default branch>` |
 | which trash entries exist | `readdir` of `<root>/<repo-id>/.trash` |
 | whether cloning would work here, and why not | probed live by `wtm doctor`, never remembered |
@@ -102,37 +108,60 @@ Git derives the name of `<common dir>/worktrees/<x>` from the basename of
 the worktree path and appends a digit on collision, so a worktree named
 `feat` can have its metadata in `worktrees/feat1`, and a name containing a
 slash uses only the last component. The gitdir path must always be read
-from `git worktree list --porcelain` or from the worktree's `.git` file. It
-must never be constructed by joining the worktree name.
+back, either with `git -C <worktree> rev-parse --path-format=absolute
+--git-dir` or from the `gitdir:` line of the worktree's `.git` file.
+`git worktree list --porcelain` does not report it. It must never be
+constructed by joining the worktree name.
 
 ## 3. Configuration
 
-TOML, same keys at every level. Precedence, highest first:
+TOML. Every setting is scoped to whoever owns the decision, and a setting is
+absent from a layer on purpose rather than by omission.
 
-1. command-line flag
-2. environment variable `WTM_<KEY>` (upper case, e.g. `WTM_DIR`, `WTM_INIT`)
-3. project config `<repo>/.wtm/config.toml`, read from the **main worktree**
-4. global config `$XDG_CONFIG_HOME/wtm/config.toml`
-5. built-in default
+| key | flag | env | project | global | default |
+|---|---|---|---|---|---|
+| `dir` | `--dir` | `WTM_DIR` | — | yes | `~/.local/share/wtm/worktrees` |
+| `base` | `--base` | `WTM_BASE` | yes | — | `origin/HEAD` |
+| `branch_prefix` | — | `WTM_BRANCH_PREFIX` | — | yes | `""` |
+| `fetch` | `--fetch` | `WTM_FETCH` | — | yes | `false` |
+
+Higher layers win, left to right. Project config is `<repo>/.wtm/config.toml`,
+read from the **main worktree**; global config is
+`$XDG_CONFIG_HOME/wtm/config.toml`.
+
+`dir`, `branch_prefix` and `fetch` describe this machine and this person, so
+a repository cannot set them: cloning a repo must never relocate your
+worktrees, rename your branches, or add a network round-trip to every
+creation. A project file that sets one is an error naming the file and the
+key. `base` describes the repository, so a global default for it would be
+meaningless.
 
 ```toml
-dir = "~/.local/share/wtm/worktrees"           # data dir root; "~" expanded
-init = "wtm-init.sh"                           # path relative to repo root, or absolute
-base = "origin/HEAD"                           # any ref; "origin/HEAD" means resolve the remote default
-branch_prefix = ""                             # "alvaro/" turns `wtm new foo` into branch alvaro/foo
-fetch = false                                  # `git fetch` the base's remote before creating
-include = ".worktreeinclude"                   # path of the include file, relative to repo root
+# ~/.config/wtm/config.toml
+dir = "~/.local/share/wtm/worktrees"   # "~" expanded
+branch_prefix = "alvaro/"              # `wtm new foo` creates branch alvaro/foo
+fetch = false                          # git fetch before creating
 
-[clone]
-mode = "auto"        # "auto": CoW when possible, else checkout. "cow": fail if impossible. "checkout": never clone.
-workers = 0          # checkout.workers for the fallback; 0 = number of cores
-
-[rm]
-wait = false         # unlink synchronously instead of renaming to trash
+# <repo>/.wtm/config.toml
+base = "origin/HEAD"                   # any ref; "origin/HEAD" resolves the remote default
 ```
+
+Everything else is a flag, because it is a per-invocation decision:
+`--init` and `--no-init` for the hook, `--clone-mode` for the creation
+method, `--wait` for synchronous removal. The two per-repository behaviours
+that would otherwise want settings already have their own files at the repo
+root: `wtm-init.sh` and `.worktreeinclude`.
+
+Parallel checkout always uses the core count; git's own `checkout.workers`
+default is one worker, and anyone who wants a different number sets it in
+their git config, where it already exists.
 
 Unknown keys are an error naming the file and key. `wtm config` prints the
 effective merged config with the origin of each value.
+
+`WTM_<KEY>` names are reserved for configuration, which is input to `wtm`.
+Anything `wtm` exports to a child process is named `WTM_HOOK_<...>` instead,
+so that setting one can never be mistaken for the other (section 7).
 
 ## 4. Commands
 
@@ -154,20 +183,21 @@ Global behaviour for every command:
   when a command runs against them, or by `wtm gc`.
 
 Exit codes: 0 success; 1 failure; 2 usage error; 3 worktree created but the
-init hook failed; 4 refused because the worktree is dirty.
+init hook failed; 4 refused, and `--force` would override it (the worktree
+is dirty, or locked).
 
 ### 4.1 `wtm new <name> [flags]`
 
 Creates a worktree and prints its absolute path on stdout, nothing else.
 
-Flags: `--base <ref>`, `--from <worktree-name-or-path>`, `--dir <path>`,
+Flags: `--base <ref>`, `--dir <path>`,
 `--init <path>`, `--no-init`, `--fetch`, `--clone-mode auto|cow|checkout`,
 `--branch <name>` (branch name if different from `<name>`), `--force`
 (reuse an existing branch even if it is checked out elsewhere is never
 allowed; `--force` only permits a `<name>` whose directory exists in trash).
 
-Name rules: `<name>` matches `^[A-Za-z0-9._][A-Za-z0-9._/-]*$`, no `..`
-component, no leading `-`, at most 200 bytes. It doubles as the branch name
+Name rules: `<name>` matches `^[A-Za-z0-9._][A-Za-z0-9._/-]*$`, no `.` or
+`..` component, no empty component, no leading `-`, at most 200 bytes. It doubles as the branch name
 after `branch_prefix` is applied; the directory is `<data dir>/<repo-id>/<name>`.
 
 Branch semantics: if `<prefix><name>` does not exist, create it at the base.
@@ -178,10 +208,13 @@ that worktree's path (git refuses this and so do we).
 Algorithm: section 6. On hook failure: worktree stays, path is still printed,
 exit 3.
 
-### 4.2 `wtm ls [--all] [--json]`
+### 4.2 `wtm ls [--json]`
 
-Text output, one line per worktree: name, branch, short base commit, age
-and path, each derived per section 2.2. There is no init-status column;
+Text output, one line per worktree: name, branch, short base commit, age,
+status and path, each derived per section 2.2. Status is empty for a healthy
+worktree, `missing` when git reports it prunable (its directory is gone or
+its gitdir pointer is broken) and `locked` when it is locked; an all-empty
+column is not printed. There is no init-status column;
 nothing records it. `--all` walks the data root, resolves each `<repo-id>` directory to its
 repo through a worktree's `.git` file, and groups by repo, marking
 worktrees whose directory no longer exists as `missing` and `<repo-id>`
@@ -193,11 +226,14 @@ under the repo's data dir; age and base are derived per section 2.2.
 ### 4.3 `wtm rm <name> [--force] [--wait] [-d|--delete-branch] [-D|--force-delete-branch]`
 
 Removes a worktree. Refuses (exit 4) if `git status --porcelain` in it is
-non-empty, unless `--force`. Also refuses if the worktree is the caller's
+non-empty, or if git reports it `locked`, unless `--force`. Git needs
+`--force` twice to remove a locked worktree; `wtm` supplies the second one,
+having already been told to force. Also refuses if the worktree is the caller's
 current directory or an ancestor of it, with a hint to `cd` out first.
 `-d`/`--delete-branch` deletes the branch after removal with `git branch
 -d` semantics: it refuses an unmerged branch and says so, the worktree is
-still removed. `-D`/`--force-delete-branch` uses `git branch -D`. The default
+still removed and the exit code is 1, since not everything asked for was
+done. `-D`/`--force-delete-branch` uses `git branch -D`. The default
 keeps the branch, since deleting one is not reversible the way the trash
 rename is. Algorithm: section 8. Prints nothing on stdout.
 
@@ -217,7 +253,8 @@ stored state: the worktree path, its branch, and the repo.
 Sweeps every `.trash` under the data root (section 8.4), runs
 `git worktree prune` for every repo reachable from it, reports orphaned
 `<repo-id>` directories and deletes them with `--orphans`, and removes
-empty `<repo-id>` directories. `--dir <path>` sweeps a non-default root. `--wait` runs the sweep
+empty `<repo-id>` directories. `wtm ls --all` lists the same set without
+deleting anything, and ships with this command rather than before it. `--dir <path>` sweeps a non-default root. `--wait` runs the sweep
 in the foreground instead of spawning a reaper.
 
 ### 4.7 `wtm doctor [--json]`
@@ -254,7 +291,10 @@ command definitions so they cannot drift.
 
 In order, each failing with a specific message:
 
-1. `git` is at least 2.31 (parallel checkout) and the directory is a repo.
+1. `git` is at least 2.36 and the directory is a repo. 2.31 brought parallel
+   checkout, which the fallback path uses; 2.36 brought `worktree list
+   --porcelain -z`, without which a worktree path containing a newline is
+   misparsed.
 2. The source worktree is not mid-operation: none of `rebase-merge`,
    `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
    `BISECT_LOG` exist in its gitdir. Otherwise fail; the caller must finish
@@ -306,6 +346,9 @@ it. The failure message names the step.
 `auto` (default) chooses CoW when all of these hold, else checkout with a
 warning explaining which one failed and the override that would fix it:
 
+- the source has a working tree: a bare repository has no files to clone,
+  and this is a property of the repository rather than a failure, so `cow`
+  reports it as unsupported rather than as an error to work around;
 - source and destination parent have the same `st_dev`;
 - a probe succeeds: clone one small regular file from the source (the first
   regular file found in the source's top level, falling back to any tracked
@@ -455,16 +498,26 @@ stderr are passed through to `wtm`'s stderr, prefixed with `init: ` only
 when stderr is not a terminal. Environment: the caller's, plus
 
 ```
-WTM_ROOT      absolute path of the new worktree
-WTM_NAME      worktree name
-WTM_BRANCH    branch checked out
-WTM_BASE      base ref as given
-WTM_BASE_SHA  resolved base commit
-WTM_SOURCE    absolute path of the source worktree
-WTM_MAIN      absolute path of the main worktree
-WTM_REPO_ID   repo id
-WTM_METHOD    "cow" or "checkout"
+WTM_HOOK_ROOT      absolute path of the new worktree
+WTM_HOOK_NAME      worktree name
+WTM_HOOK_BRANCH    branch checked out
+WTM_HOOK_BASE_REF  base ref as given
+WTM_HOOK_BASE_SHA  resolved base commit
+WTM_HOOK_MAIN      absolute path of the main worktree
+WTM_HOOK_REPO_ID   repo id
+WTM_HOOK_METHOD    "cow" or "checkout"
 ```
+
+The `WTM_HOOK_` prefix is load-bearing. `WTM_<KEY>` names are **input** to
+`wtm`, read as configuration overrides (section 3); these are **output**,
+describing the worktree that was just made. Sharing one namespace would mean
+a hook that starts anything which later runs `wtm` silently passes this
+worktree's base off as a configuration override, and a long-lived process
+started by a hook would carry it for its whole life. The two directions get
+separate prefixes so that cannot happen.
+
+`WTM_HOOK_SOURCE` returns with `--from` (section 14); while the source is
+always the main worktree it would duplicate `WTM_HOOK_MAIN`.
 
 Failure: non-zero exit keeps the worktree and prints "init hook failed (exit N); worktree
 kept at <path>; rerun with: wtm init <name>", and `wtm new` exits 3 after printing the path. The
@@ -551,17 +604,27 @@ of a known root.
 wtm() {
   case "$1" in
     new|cd)
-      local out; out="$(command wtm "$@")" || { local rc=$?; [ -n "$out" ] && printf '%s\n' "$out"; return $rc; }
-      [ -d "$out" ] && cd "$out" || printf '%s\n' "$out" ;;
-    *) command wtm "$@" ;;
+      local out rc
+      out="$(command wtm "$@")"
+      rc=$?
+      if [ -d "$out" ]; then
+        cd "$out" || return $?
+      elif [ -n "$out" ]; then
+        printf '%s\n' "$out"
+      fi
+      return $rc
+      ;;
+    *)
+      command wtm "$@"
+      ;;
   esac
 }
 ```
 
-Exit code 3 from `new` (hook failed) still changes directory, because the
-worktree exists; the wrapper prints the path and returns 3 only when the
-directory is missing. Bash is the same; fish uses its own syntax. Completion
-scripts are a later addition.
+The exit code is always the binary's. Exit code 3 from `new` (hook failed)
+still changes directory, because the worktree exists; the path is printed
+instead only when there is no directory to enter. Bash uses the same text;
+fish uses its own syntax. Completion scripts are a later addition.
 
 ## 10. Agent skill
 
@@ -642,8 +705,9 @@ The strategy is in `TESTING.md`; this section keeps the acceptance criteria.
 ## 14. Not in v1
 
 Carrying uncommitted changes into the new worktree (`--dirty`), inline hook
-commands in config, symlinked shared caches, closest-worktree source
-selection, trust prompts for repo hooks, btrfs subvolume snapshots, Windows,
+commands in config, symlinked shared caches, `--from` and closest-worktree
+source selection (both wait for the clone that gives them a purpose),
+trust prompts for repo hooks, btrfs subvolume snapshots, Windows,
 shell completions, `wtm agent install`, and anything about macOS Spotlight
 indexing: a user who minds it can exclude the directory themselves, from
 the init hook or from the Spotlight Privacy settings.

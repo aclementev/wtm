@@ -1,0 +1,14 @@
+---
+source: tests/snapshots.rs
+expression: "run(&[command, \"--help\"])"
+---
+Print the effective configuration and where each value came from
+
+Usage: wtm config [OPTIONS]
+
+Options:
+      --json         Emit JSON instead of text
+      --repo <PATH>  Operate on the repository at this path instead of the current directory
+      --dir <PATH>   Data root holding the worktrees
+  -q, --quiet        Silence progress messages
+  -h, --help         Print help

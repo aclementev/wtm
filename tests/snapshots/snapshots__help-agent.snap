@@ -1,0 +1,16 @@
+---
+source: tests/snapshots.rs
+expression: "run(&[command, \"--help\"])"
+---
+Output for coding agents
+
+Usage: wtm agent [OPTIONS] [COMMAND]
+
+Commands:
+  skill  Print a skill file describing wtm to a coding agent
+
+Options:
+      --repo <PATH>  Operate on the repository at this path instead of the current directory
+      --dir <PATH>   Data root holding the worktrees
+  -q, --quiet        Silence progress messages
+  -h, --help         Print help

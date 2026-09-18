@@ -1,0 +1,26 @@
+---
+source: tests/snapshots.rs
+expression: "run(&[\"--help\"])"
+---
+Create, list and remove git worktrees for very large repositories
+
+Usage: wtm [OPTIONS] <COMMAND>
+
+Commands:
+  new     Create a worktree and print its path
+  ls      List the worktrees of this repository
+  cd      Print the path of a worktree
+  rm      Remove a worktree
+  init    Rerun the init hook in a worktree
+  gc      Empty the trash and prune stale git metadata
+  doctor  Report on this repository, the data root and the creation method
+  config  Print the effective configuration and where each value came from
+  shell   Print a shell function that changes directory after `new` and `cd`
+  agent   Output for coding agents
+
+Options:
+      --repo <PATH>  Operate on the repository at this path instead of the current directory
+      --dir <PATH>   Data root holding the worktrees
+  -q, --quiet        Silence progress messages
+  -h, --help         Print help
+  -V, --version      Print version
