@@ -105,20 +105,27 @@ are identical for every path in the tree.
   of `Mixed` nodes plus one. This runs on any filesystem and is the fast
   test for the walk logic; 2.3 is the slow one that also covers git.
 - Derivations (`DESIGN.md` 2.2), one test each, since these replace stored
-  state: the creation time read back from git's metadata directory is within
-  a second of the clock at creation; the base derived by merge-base equals
-  the commit `--base` named, including when the base is a tag or a raw sha;
-  the repo recovered from a `<repo-id>` directory equals the real repo path,
-  and is `None` for an empty or orphaned directory; git's metadata directory
-  name is read, not computed, proven by creating worktrees whose paths share
-  a basename so git appends a digit, then asserting both resolve correctly.
-- `Config`: one table-driven test with five layers assigning a distinct
-  value per key; assert the merged `Setting` value and `Origin` for each
-  key and each subset of layers present. Unknown keys reject with the file
-  name and key.
+  state: the creation time read from the worktree directory's birth time is
+  within a second of the clock at creation; the base derived by merge-base
+  equals the commit `--base` named, including when the base is a tag or a
+  raw sha; git's metadata directory name is read, not computed, proven by
+  creating worktrees whose paths share a basename so git appends a digit,
+  then asserting both resolve correctly. Recovering the repo behind a
+  `<repo-id>` directory is tested with `wtm gc`, which is what needs it.
+- `Config`: one table-driven test over every key and every subset of the
+  layers that key accepts, asserting both the merged value and its `Origin`.
+  A key is absent from a layer on purpose (`DESIGN.md` 3), so the table
+  also pins which layers each key accepts: a project file setting a
+  personal key is rejected, as are unknown keys, both naming file and key.
 - `RepoId`: symlinked and non-symlinked paths to the same directory give
   the same id; different directories with the same basename give different
   ids; the id matches `^[^/]+-[0-9a-f]{8}$`.
+
+- The preconditions of `DESIGN.md` 5 (`create::check`) are a pure function
+  of a `Request` and an `Observed`, so each rule is a table row rather than
+  a repository fixture: one case per refusal, one asserting the specified
+  order when two rules both apply, and one per branch outcome. This set
+  grows with every later feature, which is why it is kept pure.
 
 ## 4. Fault injection for rollback
 
@@ -172,8 +179,10 @@ exit code 3; `wtm init` with a fixed hook then exits 0.
   "$(wtm shell zsh)"; wtm new t >/dev/null; pwd'` and asserts the printed
   directory. Same for bash and fish when installed.
 - stdout purity: for `wtm new`, stdout is exactly one line, the path, even
-  with `WTM_DEBUG` set, even when the hook writes to stdout, even on exit
-  code 3.
+  when the hook writes to stdout, even on exit code 3. The case is also run
+  with `WTM_DEBUG` set; until the reaper exists that variable produces no
+  output, so it is a guard against future diagnostics reaching the wrong
+  stream rather than coverage of anything today.
 
 ## 7. Performance guard
 
