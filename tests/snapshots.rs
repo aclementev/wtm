@@ -40,33 +40,47 @@ fn shell_wrappers_are_reviewed_not_drifted() {
     }
 }
 
+const SHELLS: [&str; 3] = ["zsh", "bash", "fish"];
+
+/// Wraps `body` in whatever each shell needs to define the wtm function.
+/// Fish has no `$(...)`, and `string collect` keeps the multi-line function
+/// text intact through its command substitution.
+fn wrapper_script(shell: &str, body: &str) -> String {
+    match shell {
+        "fish" => format!("eval (wtm shell fish | string collect); {body}"),
+        _ => format!("eval \"$(wtm shell {shell})\"; {body}"),
+    }
+}
+
+fn in_shell(shell: &std::path::Path, repo: &common::TestRepo, script: &str) -> std::process::Output {
+    Command::new(shell)
+        .arg("-c")
+        .arg(script)
+        .current_dir(&repo.main)
+        .env("PATH", path_with_wtm())
+        .env("HOME", &repo.root)
+        .env("XDG_CONFIG_HOME", repo.root.join("config"))
+        .env("XDG_DATA_HOME", repo.root.join("share"))
+        .env("WTM_DIR", &repo.data)
+        .output()
+        .expect("run the shell")
+}
+
 /// Printing a wrapper that does not work in the shell it names would be
 /// invisible to a snapshot, so each one is evaluated for real.
 #[test]
 fn each_wrapper_changes_directory_in_its_own_shell() {
-    for shell in ["zsh", "bash", "fish"] {
+    for shell in SHELLS {
         let Some(shell_path) = which(shell) else {
-            eprintln!("skipping {shell}: not installed");
-            continue;
+            panic!("{shell} is not installed; the wrapper it prints is untested");
         };
 
         let repo = RepoBuilder::new(&format!("wrapper-{shell}")).build();
-        let script = match shell {
-            "fish" => "eval (wtm shell fish | string collect); wtm new task >/dev/null; pwd".to_string(),
-            _ => format!("eval \"$(wtm shell {shell})\"; wtm new task >/dev/null; pwd"),
-        };
-
-        let output = Command::new(shell_path)
-            .arg("-c")
-            .arg(&script)
-            .current_dir(&repo.main)
-            .env("PATH", path_with_wtm())
-            .env("HOME", &repo.root)
-            .env("XDG_CONFIG_HOME", repo.root.join("config"))
-            .env("XDG_DATA_HOME", repo.root.join("share"))
-            .env("WTM_DIR", &repo.data)
-            .output()
-            .expect("run the shell");
+        let output = in_shell(
+            &shell_path,
+            &repo,
+            &wrapper_script(shell, "wtm new task >/dev/null; pwd"),
+        );
 
         let printed = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
         let expected = repo.worktree_path(&repo.repo_id(), "task");
@@ -75,6 +89,32 @@ fn each_wrapper_changes_directory_in_its_own_shell() {
             expected.display().to_string(),
             "{shell} wrapper did not change directory; stderr:\n{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// `DESIGN.md` 4.9: the wrapper must return the binary's exit code. It is a
+/// shell function, so a careless one returns the status of its last command
+/// -- a successful `printf` or `cd` -- and every failure looks like success.
+#[test]
+fn each_wrapper_returns_the_exit_code_of_the_binary() {
+    for shell in SHELLS {
+        let Some(shell_path) = which(shell) else {
+            panic!("{shell} is not installed; the wrapper it prints is untested");
+        };
+
+        let repo = RepoBuilder::new(&format!("wrapper-rc-{shell}")).build();
+        let status = if shell == "fish" { "$status" } else { "$?" };
+        let output = in_shell(
+            &shell_path,
+            &repo,
+            &wrapper_script(shell, &format!("wtm cd nope; echo rc={status}")),
+        );
+
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("rc=2"),
+            "{shell} wrapper lost the exit code; stdout was {:?}",
+            String::from_utf8_lossy(&output.stdout)
         );
     }
 }
