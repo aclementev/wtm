@@ -175,6 +175,21 @@ exit code 3; `wtm init` with a fixed hook then exits 0.
   skill`, and `wtm shell zsh|bash|fish`. Any wording change is a reviewed
   snapshot update, and the skill cannot drift from the flags because both
   come from the same definitions.
+
+  The `.snap` files are committed, so an accepted change arrives as a diff
+  in the pull request. Working on them needs `cargo install cargo-insta`:
+
+  | command | what it does |
+  |---|---|
+  | `cargo test` | fails on any mismatch, writes the new output beside the old as `.snap.new` |
+  | `cargo insta review` | shows each pending change and asks to accept or reject it |
+  | `cargo insta accept` | accepts every pending change without looking, for when the diff has already been read |
+  | `cargo insta test --check` | fails on a mismatch and writes nothing; this is the CI form |
+
+  Do not set `INSTA_FORCE_UPDATE`. It writes straight over the `.snap`,
+  skipping the pending step that makes a change reviewable, and it leaves
+  an `assertion_line` field in the file that `accept` would have stripped,
+  so every snapshot churns when a line moves in the test file.
 - The shell wrapper is executed for real: a test spawns `zsh -c 'eval
   "$(wtm shell zsh)"; wtm new t >/dev/null; pwd'` and asserts the printed
   directory. Same for bash and fish. A second test asserts the wrapper
