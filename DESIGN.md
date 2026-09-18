@@ -50,6 +50,15 @@ $XDG_CONFIG_HOME/wtm/config.toml        global config
 That is the whole footprint. `wtm` writes no state files, keeps no
 registry, has no state directory, no lock file and no daemon.
 
+The `.noindex` suffix on the default root is load-bearing on macOS:
+creating a hundred thousand files wakes the Spotlight indexer, which then
+walks the whole tree and heats the machine noticeably. Spotlight skips any
+directory whose name ends in `.noindex`. When the data root is a path the
+user chose, `wtm` cannot rename it, so on first use it drops a
+`.metadata_never_index` file in the root and prints a one-time hint naming
+the Spotlight Privacy setting; that marker is honoured less reliably for
+folders than the suffix is, which is why the default uses the suffix.
+
 ### 2.1 Repo identity
 
 `<repo-id>` is `<basename of the main worktree>-<first 8 hex chars of
@@ -212,7 +221,7 @@ Reruns the init hook in the named worktree (default: the current one).
 Exit 3 on failure. It has all the provenance the hook needs without any
 stored state: the worktree path, its branch, and the repo.
 
-### 4.6 `wtm gc [--wait]`
+### 4.6 `wtm gc [--wait] [--dir <path>] [--orphans]`
 
 Sweeps every `.trash` under the data root (section 8.4), runs
 `git worktree prune` for every repo reachable from it, reports orphaned

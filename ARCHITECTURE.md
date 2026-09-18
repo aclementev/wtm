@@ -174,7 +174,6 @@ impl Layout {
     pub fn worktree_dir(&self, id: &RepoId, name: &WorktreeName) -> PathBuf;
     pub fn trash_dir(&self, id: &RepoId) -> PathBuf;
 }
-
 ```
 
 `wtm` persists nothing else. There is no `state.rs`, no registry, no lock
@@ -279,6 +278,9 @@ pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> Result<SweepStats>;
 
 ```rust
 pub struct HookEnv { pub root, name, branch, base, base_sha, source, main, repo_id, method }
+/// Outcome of the hook. Returned to the caller, reported immediately by
+/// `ui` and the exit code, and never written to disk (DESIGN.md 2.2).
+pub enum InitStatus { Ok, Failed { exit_code: i32 }, Skipped }
 pub enum HookResolution { File(PathBuf), DefaultMissing, ConfiguredMissing(PathBuf, Origin) }
 pub fn resolve(config: &Config, source: &Path) -> HookResolution;
 pub fn run(path: &Path, cwd: &Path, env: &HookEnv, ui: &Ui) -> Result<InitStatus>;
