@@ -111,4 +111,5 @@ three CI jobs are green.
 Carrying uncommitted changes into a new worktree, inline hook commands in
 configuration, symlinked shared caches, choosing the clone source by commit
 distance, trust prompts for repository hooks, btrfs subvolume snapshots,
-Windows, shell completions, and `wtm agent install`.
+Windows, shell completions, `wtm agent install`, and anything about macOS
+Spotlight indexing.

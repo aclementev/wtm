@@ -36,7 +36,7 @@ the same code paths. Windows is out of scope. Implementation language: Rust.
 
 ```
 $XDG_DATA_HOME/wtm/                     default ~/.local/share/wtm
-  worktrees.noindex/                    the data root; .noindex keeps Spotlight out
+  worktrees/                            the data root
     <repo-id>/
       <name>/                           one worktree; <name> may contain "/"
       .trash/                           removed worktrees awaiting unlink
@@ -49,15 +49,6 @@ $XDG_CONFIG_HOME/wtm/config.toml        global config
 
 That is the whole footprint. `wtm` writes no state files, keeps no
 registry, has no state directory, no lock file and no daemon.
-
-The `.noindex` suffix on the default root is load-bearing on macOS:
-creating a hundred thousand files wakes the Spotlight indexer, which then
-walks the whole tree and heats the machine noticeably. Spotlight skips any
-directory whose name ends in `.noindex`. When the data root is a path the
-user chose, `wtm` cannot rename it, so on first use it drops a
-`.metadata_never_index` file in the root and prints a one-time hint naming
-the Spotlight Privacy setting; that marker is honoured less reliably for
-folders than the suffix is, which is why the default uses the suffix.
 
 ### 2.1 Repo identity
 
@@ -125,7 +116,7 @@ TOML, same keys at every level. Precedence, highest first:
 5. built-in default
 
 ```toml
-dir = "~/.local/share/wtm/worktrees.noindex"   # data dir root; "~" expanded
+dir = "~/.local/share/wtm/worktrees"           # data dir root; "~" expanded
 init = "wtm-init.sh"                           # path relative to repo root, or absolute
 base = "origin/HEAD"                           # any ref; "origin/HEAD" means resolve the remote default
 branch_prefix = ""                             # "alvaro/" turns `wtm new foo` into branch alvaro/foo
@@ -653,7 +644,9 @@ The strategy is in `TESTING.md`; this section keeps the acceptance criteria.
 Carrying uncommitted changes into the new worktree (`--dirty`), inline hook
 commands in config, symlinked shared caches, closest-worktree source
 selection, trust prompts for repo hooks, btrfs subvolume snapshots, Windows,
-shell completions, `wtm agent install`.
+shell completions, `wtm agent install`, and anything about macOS Spotlight
+indexing: a user who minds it can exclude the directory themselves, from
+the init hook or from the Spotlight Privacy settings.
 
 ## 15. Crate layout
 
