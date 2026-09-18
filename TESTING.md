@@ -177,7 +177,11 @@ exit code 3; `wtm init` with a fixed hook then exits 0.
   come from the same definitions.
 - The shell wrapper is executed for real: a test spawns `zsh -c 'eval
   "$(wtm shell zsh)"; wtm new t >/dev/null; pwd'` and asserts the printed
-  directory. Same for bash and fish when installed.
+  directory. Same for bash and fish. A second test asserts the wrapper
+  returns the binary's exit code, which a snapshot cannot show and which a
+  careless wrapper loses by returning the status of its last `cd` or
+  `printf`. A shell that is not installed fails the test rather than
+  skipping: a wrapper nobody runs is a wrapper nobody has checked.
 - stdout purity: for `wtm new`, stdout is exactly one line, the path, even
   when the hook writes to stdout, even on exit code 3. The case is also run
   with `WTM_DEBUG` set; until the reaper exists that variable produces no

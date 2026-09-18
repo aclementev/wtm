@@ -624,7 +624,18 @@ wtm() {
 The exit code is always the binary's. Exit code 3 from `new` (hook failed)
 still changes directory, because the worktree exists; the path is printed
 instead only when there is no directory to enter. Bash uses the same text;
-fish uses its own syntax. Completion scripts are a later addition.
+fish uses its own syntax, and needs `string collect` so the multi-line
+function survives its command substitution.
+
+One fish difference is visible to users: stderr written inside a command
+substitution ignores a redirection applied to the enclosing function call,
+so `wtm new x 2>/dev/null` still shows progress under the fish wrapper
+where zsh and bash suppress it. Stdout, which is the contract, is
+unaffected, and `--quiet` silences progress at the source in every shell.
+Working around it would mean juggling file descriptors inside the wrapper,
+which is not worth the fragility.
+
+Completion scripts are a later addition.
 
 ## 10. Agent skill
 
