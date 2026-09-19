@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::git::Git;
+use crate::hook::{self, HookEnv};
 use crate::name::WorktreeName;
 use crate::repo::{self, WorktreeView};
 use crate::ui::Ui;
@@ -125,6 +126,68 @@ pub fn cd(ui: &Ui, workspace: &Workspace, name: Option<&str>) -> Result<i32> {
     };
     ui.emit(path.display().to_string());
     Ok(0)
+}
+
+/// Reruns the init hook, every value derived from the worktree itself since
+/// nothing about the original creation was recorded. `WTM_HOOK_METHOD` is the
+/// one thing that cannot be recovered that way, so it goes out empty.
+pub fn init(
+    git: &Git,
+    ui: &Ui,
+    workspace: &Workspace,
+    config: &Config,
+    name: Option<&str>,
+) -> Result<i32> {
+    let name = match name {
+        Some(name) => WorktreeName::from_str(name)?,
+        None => current_worktree(git, workspace)?,
+    };
+    let root = workspace.dir(&name);
+    if !root.is_dir() {
+        return Err(Error::usage(format!("no worktree named {name}")));
+    }
+
+    let inspected = hook::inspect(config.init.value.clone(), config.init.origin.clone());
+    let Some(path) = inspected.path()? else {
+        ui.warn(format!(
+            "no init hook at {}; nothing to run",
+            config.init.value.display()
+        ));
+        return Ok(0);
+    };
+
+    let repo = &workspace.repo;
+    let branch = repo
+        .worktrees(git)?
+        .into_iter()
+        .find(|w| w.path == root)
+        .and_then(|w| w.branch_short().map(str::to_string));
+    let env = HookEnv {
+        name: name.to_string(),
+        branch: branch.unwrap_or_default(),
+        base_ref: config.base.value.clone(),
+        base_sha: repo::base_of(git, repo, &root)
+            .map(|oid| oid.to_string())
+            .unwrap_or_default(),
+        main: repo.main.clone(),
+        repo_id: repo.id.to_string(),
+        method: String::new(),
+        root,
+    };
+    hook::run(path, &env, ui)?;
+    Ok(0)
+}
+
+/// The wtm worktree the caller is standing in. The main worktree does not
+/// count: wtm did not create it, and a hook is written for one it did.
+fn current_worktree(git: &Git, workspace: &Workspace) -> Result<WorktreeName> {
+    let cwd = std::env::current_dir().map_err(|e| Error::io("current directory", e))?;
+    let toplevel = git
+        .toplevel(&cwd)
+        .and_then(|path| std::fs::canonicalize(&path).map_err(|e| Error::io(path, e)))?;
+    workspace.name_of(&toplevel).ok_or_else(|| {
+        Error::usage("not inside a wtm worktree; name one with `wtm init <name>`")
+    })
 }
 
 pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {

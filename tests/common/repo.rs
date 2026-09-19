@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -96,6 +97,15 @@ impl TestRepo {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, contents).unwrap();
+    }
+
+    /// Writes a file in the main worktree with the executable bit set, which
+    /// `wtm` requires of an init hook.
+    pub fn executable(&self, relative: &str, script: &str) -> PathBuf {
+        self.write(relative, script);
+        let path = self.main.join(relative);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 
     /// Runs git with the same scrubbed environment as the binary, so oracle

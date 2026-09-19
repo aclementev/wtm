@@ -1,11 +1,20 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::config::Config;
+use crate::config::{Config, Setting};
 use crate::error::{Error, Result};
 use crate::git::{Git, Oid};
+use crate::hook::{self, Hook, HookEnv};
 use crate::name::WorktreeName;
+use crate::repo;
 use crate::ui::Ui;
 use crate::workspace::Workspace;
+
+/// Choices made once, for this invocation, which is why they are flags and
+/// never reach `Config`.
+pub struct Options {
+    pub branch: Option<String>,
+    pub no_init: bool,
+}
 
 /// `wtm new` in four steps: derive what was asked for, observe what git and
 /// the filesystem say about it, check the preconditions, then act. Only the
@@ -16,9 +25,9 @@ pub fn run(
     workspace: &Workspace,
     config: &Config,
     name: WorktreeName,
-    branch: Option<&str>,
+    options: &Options,
 ) -> Result<()> {
-    let request = derive(workspace, config, name, branch)?;
+    let request = derive(workspace, config, name, options)?;
 
     // Fetching before observing, so the base resolves against fresh refs.
     if request.fetch {
@@ -31,18 +40,48 @@ pub fn run(
     create(git, ui, workspace, &request, &plan)?;
 
     ui.emit(request.dest.display().to_string());
-    Ok(())
+
+    // Outside the rollback guard and after the path is printed: a hook that
+    // fails still leaves a usable worktree behind.
+    match &plan.hook {
+        None => Ok(()),
+        Some(path) => hook::run(path, &hook_env(git, workspace, &request, &plan), ui),
+    }
+}
+
+/// Reusing an existing branch ignores the base with a warning, so reporting
+/// that base to the hook would contradict it; the merge-base derivation is
+/// the honest answer there, and the only one `wtm init` ever has.
+fn hook_env(git: &Git, ws: &Workspace, request: &Request, plan: &Plan) -> HookEnv {
+    let base_sha = match &plan.branch {
+        BranchAction::Create { base } => Some(base.clone()),
+        BranchAction::Reuse => repo::base_of(git, &ws.repo, &request.dest),
+    };
+    HookEnv {
+        root: request.dest.clone(),
+        name: request.name.to_string(),
+        branch: request.branch.clone(),
+        base_ref: request.base_spec.clone(),
+        base_sha: base_sha.map(|oid| oid.to_string()).unwrap_or_default(),
+        main: ws.repo.main.clone(),
+        repo_id: ws.repo.id.to_string(),
+        method: "checkout".to_string(),
+    }
 }
 
 /// What the caller asked for, with configuration already folded in. Pure: no
 /// part of this depends on the state of the repository.
 pub struct Request {
+    pub name: WorktreeName,
     pub dest: PathBuf,
     pub branch: String,
     /// The base as written, still unresolved: `origin/HEAD` means "ask git".
     pub base_spec: String,
     pub workers: usize,
     pub fetch: bool,
+    /// `None` for `--no-init`. The origin comes along because it decides
+    /// whether an absent file is silent or an error.
+    pub hook: Option<Setting<PathBuf>>,
 }
 
 /// What git and the filesystem say about a `Request`. Every question is asked
@@ -53,6 +92,7 @@ pub struct Observed {
     pub branch: BranchState,
     pub in_progress: Option<&'static str>,
     pub dest_exists: bool,
+    pub hook: Hook,
 }
 
 /// The three cases of `DESIGN.md` 4.1. As an enum rather than a flag plus an
@@ -68,6 +108,7 @@ pub enum BranchState {
 pub struct Plan {
     pub source_head: Oid,
     pub branch: BranchAction,
+    pub hook: Option<PathBuf>,
 }
 
 pub enum BranchAction {
@@ -79,20 +120,22 @@ pub fn derive(
     workspace: &Workspace,
     config: &Config,
     name: WorktreeName,
-    branch: Option<&str>,
+    options: &Options,
 ) -> Result<Request> {
     Ok(Request {
         dest: workspace.dir(&name),
         branch: format!(
             "{}{}",
             config.branch_prefix.value,
-            branch.unwrap_or(name.as_str())
+            options.branch.as_deref().unwrap_or(name.as_str())
         ),
         base_spec: config.base.value.clone(),
         // Git's own default is one worker; passing the core count is what
         // makes the fallback checkout parallel at all.
         workers: std::thread::available_parallelism().map_or(1, |n| n.get()),
         fetch: config.fetch.value,
+        hook: (!options.no_init).then(|| config.init.clone()),
+        name,
     })
 }
 
@@ -106,6 +149,10 @@ pub fn observe(git: &Git, workspace: &Workspace, request: &Request) -> Result<Ob
             .gitdir_of(main)
             .and_then(|gitdir| Git::in_progress_operation(&gitdir)),
         dest_exists: request.dest.exists(),
+        hook: match &request.hook {
+            None => Hook::Skip,
+            Some(init) => hook::inspect(init.value.clone(), init.origin.clone()),
+        },
     })
 }
 
@@ -141,6 +188,10 @@ fn resolve_base(git: &Git, workspace: &Workspace, spec: &str) -> Option<Oid> {
 /// acting another process may change any of it. The purpose here is a precise
 /// message before work starts, not safety.
 pub fn check(request: &Request, observed: &Observed) -> Result<Plan> {
+    // First because it is the only rule needing nothing from git, and a hook
+    // that could never run should not cost a worktree.
+    let hook = observed.hook.path()?.map(Path::to_path_buf);
+
     let Some(source_head) = observed.source_head.clone() else {
         return Err(Error::usage("the main worktree has no commit to branch from"));
     };
@@ -176,6 +227,7 @@ pub fn check(request: &Request, observed: &Observed) -> Result<Plan> {
     Ok(Plan {
         source_head,
         branch,
+        hook,
     })
 }
 
@@ -268,8 +320,13 @@ fn undo(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) {
 mod tests {
     use super::*;
 
+    use crate::config::Origin;
+    use std::str::FromStr;
+
     fn request() -> Request {
         Request {
+            name: WorktreeName::from_str("task").expect("a valid name"),
+            hook: None,
             dest: PathBuf::from("/data/repo-1234abcd/task"),
             branch: "task".to_string(),
             base_spec: "origin/HEAD".to_string(),
@@ -285,6 +342,15 @@ mod tests {
             branch: BranchState::Absent,
             in_progress: None,
             dest_exists: false,
+            hook: Hook::Skip,
+        }
+    }
+
+    fn unusable_hook(reason: &'static str) -> Hook {
+        Hook::Unusable {
+            path: PathBuf::from("/repo/setup.sh"),
+            origin: Origin::Flag,
+            reason,
         }
     }
 
@@ -334,6 +400,28 @@ mod tests {
             })
             .contains("/elsewhere/task")
         );
+
+        let hook = message(Observed { hook: unusable_hook("does not exist"), ..observed() });
+        assert!(hook.contains("/repo/setup.sh"), "{hook}");
+        assert!(hook.contains("does not exist"), "{hook}");
+        assert!(hook.contains("flag"), "the layer that set it is named: {hook}");
+    }
+
+    #[test]
+    fn an_unusable_hook_is_refused_before_the_repository_is_consulted() {
+        let both = Observed {
+            hook: unusable_hook("is not executable"),
+            in_progress: Some("rebase"),
+            source_head: None,
+            ..observed()
+        };
+        assert!(message(both).contains("is not executable"));
+    }
+
+    #[test]
+    fn nothing_to_run_leaves_the_plan_without_a_hook() {
+        let plan = check(&request(), &observed()).expect("a skipped hook refuses nothing");
+        assert!(plan.hook.is_none());
     }
 
     /// `DESIGN.md` 5 fixes the order, so a repository that is both mid-rebase

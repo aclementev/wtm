@@ -76,6 +76,21 @@ fn keys() -> Vec<Key> {
             value: |_| "true",
             default: "false",
         },
+        // The only key both files may set. Absolute values, so precedence is
+        // tested apart from the relative-path rule below.
+        Key {
+            name: "init",
+            env: "WTM_INIT",
+            layers: &[Layer::Flag, Layer::Env, Layer::Project, Layer::Global],
+            set_flag: Some(|f, v| f.init = Some(PathBuf::from(v))),
+            value: |layer| match layer {
+                Layer::Flag => "/flag/init.sh",
+                Layer::Env => "/env/init.sh",
+                Layer::Project => "/project/init.sh",
+                Layer::Global => "/global/init.sh",
+            },
+            default: UNCHECKED,
+        },
     ]
 }
 
@@ -114,8 +129,15 @@ fn every_key_takes_its_value_from_the_highest_layer_it_accepts() {
             write_layer(&project_file, &key, present.contains(&Layer::Project), Layer::Project);
             write_layer(&global_file, &key, present.contains(&Layer::Global), Layer::Global);
 
-            let config = config::load(&flags, &env, Some(&project_file), Some(&global_file))
-                .unwrap_or_else(|e| panic!("{} with layers {present:?}: {e}", key.name));
+            let config = config::load(
+                &flags,
+                &env,
+                Some(&project_file),
+                Some(&global_file),
+                &dir,
+                &dir,
+            )
+            .unwrap_or_else(|e| panic!("{} with layers {present:?}: {e}", key.name));
             let (_, value, origin) = config
                 .entries()
                 .into_iter()
@@ -166,8 +188,15 @@ fn a_project_cannot_set_a_personal_key() {
         let file = dir.join("project.toml");
         std::fs::write(&file, format!("{key}\n")).unwrap();
 
-        let message = config::load(&FlagOverrides::default(), &|_| None, Some(&file), None)
-            .expect_err("a personal key in a project file must fail")
+        let message = config::load(
+            &FlagOverrides::default(),
+            &|_| None,
+            Some(&file),
+            None,
+            &dir,
+            &dir,
+        )
+        .expect_err("a personal key in a project file must fail")
             .to_string();
 
         assert!(message.contains(&file.display().to_string()), "{message}");
@@ -181,8 +210,15 @@ fn an_unknown_key_is_rejected_naming_the_file_and_the_key() {
     let file = dir.join("config.toml");
     std::fs::write(&file, "base = \"main\"\nnot_a_key = 3\n").unwrap();
 
-    let message = config::load(&FlagOverrides::default(), &|_| None, Some(&file), None)
-        .expect_err("an unknown key must fail")
+    let message = config::load(
+        &FlagOverrides::default(),
+        &|_| None,
+        Some(&file),
+        None,
+        &dir,
+        &dir,
+    )
+    .expect_err("an unknown key must fail")
         .to_string();
 
     assert!(message.contains(&file.display().to_string()), "{message}");
@@ -196,9 +232,62 @@ fn a_missing_configuration_file_is_not_an_error() {
         &|_| None,
         Some(Path::new("/nowhere/project.toml")),
         Some(Path::new("/nowhere/global.toml")),
+        Path::new("/cwd"),
+        Path::new("/source"),
     )
     .expect("absent files simply contribute nothing");
 
     assert_eq!(config.base.value, "origin/HEAD");
     assert_eq!(config.base.origin, Origin::Default);
+}
+
+/// Getting a layer's base wrong runs the wrong file without complaining, so
+/// each one is pinned separately.
+#[test]
+fn a_relative_init_path_resolves_against_the_base_its_layer_implies() {
+    let cwd = Path::new("/cwd");
+    let source = Path::new("/source");
+
+    let resolved = |flags: FlagOverrides, env: Option<&'static str>, file: Option<&str>| {
+        let dir = common::repo::scratch("config-init-relative");
+        let project_file = dir.join("project.toml");
+        if let Some(text) = file {
+            std::fs::write(&project_file, format!("init = \"{text}\"\n")).unwrap();
+        }
+        config::load(
+            &flags,
+            &|name| (name == "WTM_INIT").then(|| env.map(str::to_string)).flatten(),
+            Some(&project_file),
+            None,
+            cwd,
+            source,
+        )
+        .expect("the layers are all valid")
+        .init
+        .value
+    };
+
+    let flag = FlagOverrides {
+        init: Some(PathBuf::from("setup.sh")),
+        ..Default::default()
+    };
+    assert_eq!(resolved(flag, None, None), cwd.join("setup.sh"));
+    assert_eq!(
+        resolved(FlagOverrides::default(), Some("setup.sh"), None),
+        cwd.join("setup.sh")
+    );
+    assert_eq!(
+        resolved(FlagOverrides::default(), None, Some("setup.sh")),
+        source.join("setup.sh")
+    );
+    assert_eq!(
+        resolved(FlagOverrides::default(), None, None),
+        source.join("wtm-init.sh"),
+        "the default hook lives at the root of the source worktree"
+    );
+    assert_eq!(
+        resolved(FlagOverrides::default(), None, Some("/absolute/setup.sh")),
+        Path::new("/absolute/setup.sh"),
+        "an absolute path is used as it is"
+    );
 }
