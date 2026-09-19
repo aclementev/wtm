@@ -288,7 +288,7 @@ fn act(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) -> Re
         }
         BranchAction::Reuse => {
             ui.warn(format!(
-                "branch {} already exists; the base is ignored",
+                "checking out the existing branch {}; --base is ignored",
                 request.branch
             ));
             ui.relay(&git.run(&request.dest, &["checkout", "-q", &request.branch])?);
