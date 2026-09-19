@@ -3,7 +3,7 @@ use std::path::PathBuf;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Every failure `wtm` can report. The exit code lives here and nowhere
-/// else, so the mapping is decided in one place.
+/// else, so one place decides the mapping.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("{0}")]

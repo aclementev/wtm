@@ -2,8 +2,8 @@ use std::io::Write;
 use std::process::Output;
 
 /// Output policy. Stdout carries only machine-readable results: a path, a
-/// list, JSON. Everything a human reads goes to stderr, so `cd "$(wtm new x)"`
-/// and agents parsing stdout are never surprised.
+/// list, JSON. Everything a person reads goes to stderr, so
+/// `cd "$(wtm new x)"` gets a path and nothing else.
 ///
 /// `emit` is the only write to stdout in the program.
 pub struct Ui {
@@ -35,9 +35,8 @@ impl Ui {
         self.write(&format!("warning: {}", message.as_ref()));
     }
 
-    /// Passes on a git subprocess's stderr, which is where git puts the
-    /// progress a user expects to see. Git's wording is already shaped for
-    /// humans, so it goes through unprefixed.
+    /// Passes on a git subprocess's stderr, where git writes its progress.
+    /// Git already words it for a reader, so it goes through unprefixed.
     pub fn relay(&self, output: &Output) {
         let text = String::from_utf8_lossy(&output.stderr);
         let text = text.trim_end();

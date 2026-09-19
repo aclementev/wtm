@@ -94,8 +94,8 @@ fn each_wrapper_changes_directory_in_its_own_shell() {
 }
 
 /// The wrapper must return the binary's exit code. It is a shell function,
-/// so a careless one returns the status of its last command
-/// -- a successful `printf` or `cd` -- and every failure looks like success.
+/// so a careless one returns the status of its last command, a successful
+/// `printf` or `cd`, and every failure then looks like success.
 #[test]
 fn each_wrapper_returns_the_exit_code_of_the_binary() {
     for shell in SHELLS {

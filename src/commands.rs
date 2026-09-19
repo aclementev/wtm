@@ -66,8 +66,8 @@ fn status_of(worktree: &crate::git::GitWorktree) -> Option<&'static str> {
 }
 
 /// Columns padded to the width of the rows actually being printed, separated
-/// by two spaces. No header: the output is one line per worktree, and a
-/// header would have to be stripped by anything piping this into `awk`.
+/// by two spaces. No header, because the output is one line per worktree
+/// and anything piping this into `awk` would have to strip it.
 fn align(rows: &[Vec<String>]) -> Vec<String> {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
@@ -179,7 +179,7 @@ pub fn init(
 }
 
 /// The wtm worktree the caller is standing in. The main worktree does not
-/// count: wtm did not create it, and a hook is written for one it did.
+/// count. wtm did not create it, and a hook is written for one it did.
 fn current_worktree(git: &Git, workspace: &Workspace) -> Result<WorktreeName> {
     let cwd = std::env::current_dir().map_err(|e| Error::io("current directory", e))?;
     let toplevel = git

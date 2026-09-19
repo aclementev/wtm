@@ -41,17 +41,17 @@ pub fn run(
 
     ui.emit(request.dest.display().to_string());
 
-    // Outside the rollback guard and after the path is printed: a hook that
-    // fails still leaves a usable worktree behind.
+    // Outside the rollback guard and after the path is printed, because a
+    // hook that fails still leaves a usable worktree behind.
     match &plan.hook {
         None => Ok(()),
         Some(path) => hook::run(path, &hook_env(git, workspace, &request, &plan), ui),
     }
 }
 
-/// Reusing an existing branch ignores the base with a warning, so reporting
-/// that base to the hook would contradict it; the merge-base derivation is
-/// the honest answer there, and the only one `wtm init` ever has.
+/// Reusing an existing branch ignores the base and warns about it, so
+/// handing that base to the hook would contradict the warning. We derive it
+/// from the merge-base instead, which is also all `wtm init` ever has.
 fn hook_env(git: &Git, ws: &Workspace, request: &Request, plan: &Plan) -> HookEnv {
     let base_sha = match &plan.branch {
         BranchAction::Create { base } => Some(base.clone()),
@@ -69,8 +69,8 @@ fn hook_env(git: &Git, ws: &Workspace, request: &Request, plan: &Plan) -> HookEn
     }
 }
 
-/// What the caller asked for, with configuration already folded in. Pure: no
-/// part of this depends on the state of the repository.
+/// What the caller asked for, with configuration already folded in. Pure.
+/// No part of this depends on the state of the repository.
 pub struct Request {
     pub name: WorktreeName,
     pub dest: PathBuf,
@@ -84,8 +84,8 @@ pub struct Request {
     pub hook: Option<Setting<PathBuf>>,
 }
 
-/// What git and the filesystem say about a `Request`. Every question is asked
-/// here and nowhere else.
+/// What git and the filesystem say about a `Request`. Nowhere else asks
+/// them.
 pub struct Observed {
     pub source_head: Option<Oid>,
     pub base: Option<Oid>,
@@ -299,7 +299,7 @@ fn act(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) -> Re
 }
 
 /// Removes what a failed creation left behind, so an immediate retry works.
-/// Failures here are reported but must not mask the original error.
+/// We report failures here, but they must not mask the original error.
 fn undo(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) {
     let dest = request.dest.to_string_lossy().into_owned();
     if request.dest.exists() {

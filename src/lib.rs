@@ -28,7 +28,7 @@ pub fn run(cli: Cli) -> Result<i32> {
     let ui = Ui::new(cli.quiet);
 
     // `shell` and `agent` print static text and must work outside a
-    // repository, so they are answered before anything is discovered.
+    // repository, so they are handled before anything is discovered.
     match &cli.command {
         Command::Shell(args) => {
             ui.emit(shell::wrapper(args.shell));

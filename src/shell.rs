@@ -3,9 +3,9 @@ use crate::cli::Shell;
 /// A wrapper function for `eval "$(wtm shell zsh)"`. It changes directory
 /// after `new` and `cd` and execs the binary unchanged for everything else.
 ///
-/// Exit code 3 means the worktree was created but its init hook failed, so the
-/// wrapper still changes directory: the directory exists and is usable. The
-/// path is printed instead only when there is no directory to enter.
+/// Exit code 3 means the worktree was created but its init hook failed, so
+/// the wrapper still changes directory. The directory exists and is usable.
+/// It prints the path instead only when there is no directory to enter.
 pub fn wrapper(shell: Shell) -> &'static str {
     match shell {
         Shell::Zsh | Shell::Bash => POSIX,

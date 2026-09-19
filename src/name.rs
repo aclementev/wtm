@@ -16,7 +16,8 @@ const MAX_BYTES: usize = 200;
 ///
 /// The name doubles as the branch name once `branch_prefix` is applied. Git
 /// imposes further rules on branch names (no component starting with `.`, no
-/// `.lock` suffix); those are left to git, which reports them precisely.
+/// `.lock` suffix). Those are left to git, whose messages about them are
+/// better than ours would be.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorktreeName(String);
 

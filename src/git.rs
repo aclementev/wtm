@@ -26,7 +26,7 @@ pub(crate) const SCRUBBED: [&str; 5] = [
 pub struct Oid(String);
 
 impl Oid {
-    /// Only for tests and parsers: the hex is not checked.
+    /// Only for tests and parsers. The hex is not checked.
     pub fn from_hex(hex: impl Into<String>) -> Oid {
         Oid(hex.into())
     }
@@ -113,8 +113,8 @@ impl Git {
         &self.version
     }
 
-    /// Stdout is always captured, never inherited: it is the one stream whose
-    /// purity `wtm` guarantees to its callers.
+    /// Stdout is always captured, never inherited. It is the one stream
+    /// `wtm` keeps clear of anything but its own result.
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("-C").arg(cwd).args(args);

@@ -179,7 +179,7 @@ fn a_failed_creation_leaves_nothing_behind_and_allows_a_retry() {
 }
 
 /// A bare clone with linked worktrees is the layout people reach for when
-/// they live in many worktrees at once, which is exactly wtm's audience.
+/// they live in many worktrees at once, which is wtm's audience.
 #[test]
 fn a_bare_repository_supports_the_whole_lifecycle() {
     let seed = RepoBuilder::new("lifecycle-bare").build();
