@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Every failure `wtm` can report. The exit code lives here and nowhere else,
-/// so the mapping in `DESIGN.md` section 4 is decided in one place.
+/// Every failure `wtm` can report. The exit code lives here and nowhere
+/// else, so the mapping is decided in one place.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("{0}")]

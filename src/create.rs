@@ -95,8 +95,8 @@ pub struct Observed {
     pub hook: Hook,
 }
 
-/// The three cases of `DESIGN.md` 4.1. As an enum rather than a flag plus an
-/// optional path, "absent but checked out somewhere" cannot be expressed.
+/// An enum rather than a flag beside an optional path, so that "absent but
+/// checked out somewhere" cannot be expressed.
 pub enum BranchState {
     Absent,
     Free,
@@ -181,7 +181,7 @@ fn resolve_base(git: &Git, workspace: &Workspace, spec: &str) -> Option<Oid> {
     git.rev_parse(&workspace.repo.main, &reference).ok()
 }
 
-/// The preconditions of `DESIGN.md` 5, in that order. Pure, so the rules can
+/// The preconditions of `wtm new`, in a fixed order. Pure, so the rules can
 /// be exercised without a repository on disk.
 ///
 /// Git enforces all of this again when it runs, and between observing and
@@ -424,8 +424,8 @@ mod tests {
         assert!(plan.hook.is_none());
     }
 
-    /// `DESIGN.md` 5 fixes the order, so a repository that is both mid-rebase
-    /// and has a stale destination reports the rebase.
+    /// The order is fixed, so a repository that is both mid-rebase and has a
+    /// stale destination reports the rebase.
     #[test]
     fn the_preconditions_are_reported_in_the_specified_order() {
         let both = Observed {

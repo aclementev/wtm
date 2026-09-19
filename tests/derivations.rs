@@ -7,8 +7,8 @@ use wtm::git::Git;
 use wtm::repo::{self, Repo};
 use wtm::workspace::Workspace;
 
-// These replace stored state: every one of them is a fact `wtm` could have
-// written down and instead derives. See `DESIGN.md` 2.2.
+// These replace stored state: every one is a fact `wtm` could have written
+// down and instead derives.
 
 fn json(output: Vec<u8>) -> serde_json::Value {
     serde_json::from_slice(&output).expect("json output")
