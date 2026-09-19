@@ -15,6 +15,10 @@ impl Ui {
         Ui { quiet }
     }
 
+    pub fn quiet(&self) -> bool {
+        self.quiet
+    }
+
     pub fn emit(&self, line: impl AsRef<str>) {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{}", line.as_ref());

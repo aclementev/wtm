@@ -13,7 +13,7 @@ const MIN_VERSION: (u32, u32) = (2, 36);
 /// Variables that would silently redirect a subprocess at the caller's
 /// repository instead of the one we named with `-C`. Inheriting them has
 /// produced false merge conflicts in comparable tools.
-const SCRUBBED: [&str; 5] = [
+pub(crate) const SCRUBBED: [&str; 5] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -186,6 +186,12 @@ impl Git {
     pub fn worktrees(&self, cwd: &Path) -> Result<Vec<GitWorktree>> {
         let output = self.run(cwd, &["worktree", "list", "--porcelain", "-z"])?;
         Ok(parse_worktree_list(&output.stdout))
+    }
+
+    /// The worktree root containing `cwd`: for a linked worktree that is
+    /// the worktree itself, not the main one.
+    pub fn toplevel(&self, cwd: &Path) -> Result<PathBuf> {
+        Ok(PathBuf::from(self.stdout(cwd, &["rev-parse", "--show-toplevel"])?))
     }
 
     /// Git's metadata directory for a worktree. Git derives its name from the

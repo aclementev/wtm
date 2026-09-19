@@ -45,6 +45,9 @@ pub struct Config {
     pub base: Setting<String>,
     pub branch_prefix: Setting<String>,
     pub fetch: Setting<bool>,
+    /// Always absolute: `load` has already applied the relative-path rule,
+    /// so nothing downstream repeats it.
+    pub init: Setting<PathBuf>,
 }
 
 impl Config {
@@ -60,6 +63,7 @@ impl Config {
                 &self.branch_prefix.origin,
             ),
             entry("fetch", self.fetch.value, &self.fetch.origin),
+            entry("init", self.init.value.display(), &self.init.origin),
         ]
     }
 }
@@ -79,6 +83,7 @@ pub struct FlagOverrides {
     pub dir: Option<PathBuf>,
     pub base: Option<String>,
     pub fetch: Option<bool>,
+    pub init: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -88,15 +93,22 @@ struct RawConfig {
     base: Option<String>,
     branch_prefix: Option<String>,
     fetch: Option<bool>,
+    init: Option<String>,
 }
 
 type EnvFn<'a> = &'a dyn Fn(&str) -> Option<String>;
 
+/// A relative `init` resolves against `cwd` when it was typed this
+/// invocation and against `source`, the source worktree's root, when it came
+/// from a file. Each layer joins its own base below, so the two cannot drift
+/// apart.
 pub fn load(
     flags: &FlagOverrides,
     env: EnvFn,
     project_file: Option<&Path>,
     global_file: Option<&Path>,
+    cwd: &Path,
+    source: &Path,
 ) -> Result<Config> {
     let (project, project_path) = read(project_file)?;
     let (global, global_path) = read(global_file)?;
@@ -146,8 +158,28 @@ pub fn load(
             ],
             false,
         ),
+        init: choose(
+            vec![
+                (flags.init.clone().map(|path| cwd.join(path)), Origin::Flag),
+                (
+                    env("WTM_INIT").map(|path| cwd.join(expand_tilde(&path))),
+                    Origin::Env("WTM_INIT".into()),
+                ),
+                (
+                    project.init.as_deref().map(|p| source.join(expand_tilde(p))),
+                    project_origin(),
+                ),
+                (
+                    global.init.as_deref().map(|p| source.join(expand_tilde(p))),
+                    global_origin(),
+                ),
+            ],
+            source.join(DEFAULT_HOOK),
+        ),
     })
 }
+
+const DEFAULT_HOOK: &str = "wtm-init.sh";
 
 /// The first layer that has a value wins; layers are given highest first.
 fn choose<T>(candidates: Vec<(Option<T>, Origin)>, default: T) -> Setting<T> {
