@@ -62,7 +62,8 @@ impl FromStr for WorktreeName {
             .find(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-')))
         {
             return Err(Error::usage(format!(
-                "worktree name {s:?} contains {:?}, which is not allowed",
+                "worktree name {s:?} contains {:?}; use letters, digits, \
+                 '.', '_', '-' and '/'",
                 bad as char
             )));
         }
