@@ -135,7 +135,7 @@ a repository cannot set them: cloning a repo must never relocate your
 worktrees, rename your branches, or add a network round-trip to every
 creation. A project file that sets one is an error naming the file and the
 key. `base` describes the repository, so a global default for it would be
-meaningless. `init` is the one key both files may set: which hook a project
+meaningless. `init` is the one key both files may set. Which hook a project
 needs is the project's business, and where someone keeps their own is
 theirs. Like `dir`, a leading `~` in it is expanded.
 
@@ -247,14 +247,15 @@ wrapper changes directory to it. With no argument, prints the main worktree.
 
 ### 4.5 `wtm init [<name>] [--init <path>]`
 
-Reruns the init hook in the named worktree (default: the one the caller is
-standing in; the main worktree is not one of ours, so that is refused with
-exit 2). Exit 3 on failure. It has all the provenance the hook needs without
-any stored state: the worktree path, its branch, and the repo.
-`WTM_HOOK_BASE_SHA` is derived the way `ls` derives a base (section 2.2) and
-`WTM_HOOK_METHOD` is empty, since how the tree was first populated is not
-recorded. With no hook resolving at all it says so and exits 0, rather than
-looking like it did something.
+Reruns the init hook in the named worktree. With no name it uses the one the
+caller is standing in, and refuses with exit 2 outside one, since the main
+worktree is not ours. Exit 3 on failure.
+
+It has all the provenance the hook needs without any stored state: the
+worktree path, its branch, and the repo. `WTM_HOOK_BASE_SHA` comes from the
+derivation `ls` uses (section 2.2). `WTM_HOOK_METHOD` is empty, since nothing
+records how the tree was first populated. When no hook resolves at all it
+says so and exits 0, rather than looking like it did something.
 
 ### 4.6 `wtm gc [--wait] [--dir <path>] [--orphans]`
 
@@ -305,7 +306,7 @@ In order, each failing with a specific message:
    misparsed.
 2. The init hook resolves to a file that can be run, unless `--no-init`
    (section 7). Checked before anything is made, so a mistyped path costs
-   nothing; a hook that runs and fails is a different outcome with its own
+   nothing. A hook that runs and fails is a different outcome with its own
    exit code.
 3. The source worktree is not mid-operation: none of `rebase-merge`,
    `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
@@ -497,30 +498,29 @@ job (`git submodule update --init`).
 ## 7. Init hook
 
 Resolution: `--init`, else `WTM_INIT`, else project config, else global
-config, else `wtm-init.sh`. A relative path typed this invocation — the flag
-or the variable — is relative to the caller's working directory, the way any
-other path argument is. A relative path stored in a file, and the
-`wtm-init.sh` default, are relative to the **source worktree's** root, so a
+config, else `wtm-init.sh`. A relative path typed this invocation, from the
+flag or the variable, resolves against the caller's working directory, the
+way any other path argument does. A relative path stored in a file, and the
+`wtm-init.sh` default, resolve against the **source worktree's** root, so a
 gitignored hook in the main checkout still runs and the new worktree needs no
-copy of it. Absolute paths are used as is.
+copy of it. Absolute paths are used unchanged.
 
-The resolved file must exist and be executable, and this is checked as a
-precondition (section 5) rather than after the fact: a path that could never
-have run costs nothing. The one exception is the `wtm-init.sh` default, whose
-absence is the normal case and is skipped without a word. Any other layer
-naming a file that is missing, is not a file, or is not executable fails with
-exit 2, naming the path, the reason and the layer that set it.
+The resolved file must exist and be executable. Section 5 checks this as a
+precondition rather than after the fact, so a path that could never have run
+costs nothing. The `wtm-init.sh` default is the exception. Its absence is the
+normal case and wtm skips it without a word. Any other layer naming a file
+that is missing, is not a file, or is not executable fails with exit 2,
+naming the path, the reason and the layer that set it.
 
-Execution: the file is run directly, respecting its shebang, not through
-`sh`. Working directory: the new worktree. Its stdout and stderr both go to
-`wtm`'s stderr, unprefixed and inherited rather than piped, so a hook keeps
-its terminal and its output arrives in real time and in its real order.
+Execution: the file runs directly, respecting its shebang, not through `sh`.
+Working directory: the new worktree. Its stdout and stderr both go to `wtm`'s
+stderr, unprefixed and inherited rather than piped, so a hook keeps its
+terminal and its output arrives in real time and in its real order.
 `--quiet` discards both. Stdin is inherited only when `wtm`'s own stdin is a
-terminal, and is otherwise `/dev/null`: a hook may prompt a person, but must
-never be able to block an agent or a CI job on a read nobody will answer.
-Environment: the caller's, minus the five `GIT_*` variables every git
-subprocess drops (section 4) — a hook almost certainly runs git, and an
-inherited `GIT_DIR` would point it at the wrong repository — plus
+terminal, and is otherwise `/dev/null`, so a hook may prompt a person but can
+never block an agent or a CI job on a read nobody will answer. Environment:
+the caller's, minus the five `GIT_*` variables every git subprocess drops
+(section 4), plus
 
 ```
 WTM_HOOK_ROOT      absolute path of the new worktree
@@ -533,25 +533,29 @@ WTM_HOOK_REPO_ID   repo id
 WTM_HOOK_METHOD    "cow" or "checkout"
 ```
 
-All eight are always set, so a hook may run under `set -u`. One that does not
-apply is set empty rather than left out: `WTM_HOOK_METHOD` for a `wtm init`
-rerun, which cannot know how the tree was populated.
+All eight are always set, so a hook may run under `set -u`. A variable that
+does not apply is empty rather than absent, such as `WTM_HOOK_METHOD` for a
+`wtm init` rerun, which cannot know how the tree was populated.
 
-The `WTM_HOOK_` prefix is load-bearing. `WTM_<KEY>` names are **input** to
-`wtm`, read as configuration overrides (section 3); these are **output**,
-describing the worktree that was just made. Sharing one namespace would mean
-a hook that starts anything which later runs `wtm` silently passes this
-worktree's base off as a configuration override, and a long-lived process
-started by a hook would carry it for its whole life. The two directions get
-separate prefixes so that cannot happen.
+The `GIT_*` scrub matters because a hook almost certainly runs git. An
+inherited `GIT_DIR` would point it at the caller's repository rather than at
+the worktree it was handed.
+
+The `WTM_HOOK_` prefix separates the two directions. `WTM_<KEY>` names are
+**input** to `wtm`, read as configuration overrides (section 3); these are
+**output**, describing the worktree that was just made. Under one namespace,
+a hook that starts anything which later runs `wtm` would pass this worktree's
+base off as a configuration override, and a long-lived process started by a
+hook would carry it for its whole life.
 
 `WTM_HOOK_SOURCE` returns with `--from` (section 14); while the source is
 always the main worktree it would duplicate `WTM_HOOK_MAIN`.
 
-Failure: non-zero exit keeps the worktree and prints "init hook failed (exit N); worktree
-kept at <path>; rerun with: wtm init <name>", and `wtm new` exits 3 after printing the path. The
-outcome is reported here and nowhere else; it is not written down. A hook that needs no shell can still be a small script;
-there is no inline-command form in v1.
+Failure: a non-zero exit keeps the worktree and prints "init hook failed
+(exit N); worktree kept at <path>; rerun with: wtm init <name>", and `wtm
+new` exits 3 after printing the path. wtm reports the outcome here and
+nowhere else, and never writes it down. A hook that needs no shell can still
+be a small script; there is no inline-command form in v1.
 
 `--no-init` skips the hook, resolution and all.
 

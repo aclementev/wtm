@@ -36,7 +36,7 @@ pub struct Setting<T> {
 
 /// Every setting is scoped to whoever owns the decision. `dir`,
 /// `branch_prefix` and `fetch` describe this machine and this person, so a
-/// repository cannot set them: cloning a repo must never relocate your
+/// repository cannot set them. Cloning a repo must never relocate your
 /// worktrees, rename your branches or add a network round-trip. `base`
 /// describes the repository, so only it may come from the project file.
 #[derive(Debug)]
@@ -194,8 +194,8 @@ fn choose<T>(candidates: Vec<(Option<T>, Origin)>, default: T) -> Setting<T> {
     }
 }
 
-/// A project file that sets a machine-scoped key is a mistake worth naming,
-/// not a value to ignore quietly.
+/// A project file that sets a machine-scoped key is an error. Ignoring the
+/// value would hide a mistake its author wants to hear about.
 fn reject_user_scoped(raw: &RawConfig, file: &Path) -> Result<()> {
     let offender = [
         ("dir", raw.dir.is_some()),

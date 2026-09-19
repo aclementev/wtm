@@ -10,8 +10,8 @@ const TRASH: &str = ".trash";
 /// root holding it.
 ///
 /// Invariant: `name_of` is the inverse of `dir`. That pair is how `wtm`
-/// answers "which worktrees are ours" without keeping a registry, so the two
-/// are defined together rather than as path joins anyone may reimplement.
+/// answers "which worktrees are ours" without keeping a registry, so they
+/// live together here rather than as path joins anyone may reimplement.
 pub struct Workspace {
     pub repo: Repo,
     root: PathBuf,

@@ -323,33 +323,34 @@ pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> Result<SweepStats>;
 
 ### 3.9 Hook
 
-Resolution itself is not here: `config::load` joins each layer's relative
-path to the base that layer implies (DESIGN.md 7), so `Config.init` is
-already absolute and the rule lives on the same lines as the layers it
-governs. What remains is looking at the file and running it.
+Resolution itself is not here. `config::load` joins each layer's relative
+path to the base that layer implies, so `Config.init` arrives absolute and
+the rule sits on the same lines as the layers it governs. What remains is
+looking at the file and running it.
 
 ```rust
-/// What the configured hook turned out to be. `Skip` covers both `--no-init`
-/// and an absent default, because neither is worth a word; the `Origin` is
-/// what separates an absent default from an absent configured file.
+/// What resolving the init hook came to. `--no-init` and an absent default
+/// both give `Skip`. The `Origin` is what separates an absent default from
+/// an absent file someone configured.
 pub enum Hook { Skip, Run(PathBuf), Unusable { path: PathBuf, origin: Origin, reason: &'static str } }
 impl Hook {
     /// The hook to run, or `None`. The refusal lives here so `wtm new` and
     /// `wtm init` cannot word it differently.
+
     pub fn path(&self) -> Result<Option<&Path>>;
 }
 pub fn inspect(path: PathBuf, origin: Origin) -> Hook;   // the one look at the filesystem
 
-/// Exported as `WTM_HOOK_*`. The prefix separates output-to-a-hook from the
-/// `WTM_<KEY>` names that are input-to-wtm; see DESIGN.md 7. All eight are
-/// always set; one that does not apply is empty.
+/// Exported as `WTM_HOOK_*`. The prefix keeps these apart from `WTM_<KEY>`,
+/// which wtm reads as configuration. All eight are always set; one that does
+/// not apply is empty.
 pub struct HookEnv { pub root, name, branch, base_ref, base_sha, main, repo_id, method }
 pub fn run(path: &Path, env: &HookEnv, ui: &Ui) -> Result<()>;
 ```
 
-There is no `InitStatus`. Resolution is a precondition, so by the time `run`
-is called the only outcomes are success and `Error::HookFailed`, and the
-skipped case never reaches it.
+There is no `InitStatus`. Resolution is a precondition, so by the time
+anything calls `run` the only outcomes left are success and
+`Error::HookFailed`. The skipped case never reaches it.
 
 ### 3.10 Errors
 

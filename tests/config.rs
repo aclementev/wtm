@@ -242,7 +242,7 @@ fn a_missing_configuration_file_is_not_an_error() {
 }
 
 /// Getting a layer's base wrong runs the wrong file without complaining, so
-/// each one is pinned separately.
+/// this pins each one separately.
 #[test]
 fn a_relative_init_path_resolves_against_the_base_its_layer_implies() {
     let cwd = Path::new("/cwd");

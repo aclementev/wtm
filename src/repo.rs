@@ -19,7 +19,7 @@ use crate::workspace::Workspace;
 /// The mapping is one-way. Recover the repository behind a `<repo-id>`
 /// directory with `repo_of_dir`, which reads the `.git` file of a worktree
 /// inside it, never by reversing the hash. Moving or renaming a repository
-/// therefore yields a new id: its old worktrees become orphans, which
+/// therefore yields a new id. Its old worktrees become orphans, which
 /// `wtm ls --all` reports and `wtm gc` can remove.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RepoId(String);
@@ -52,7 +52,7 @@ fn hex(bytes: &[u8]) -> String {
 pub struct Repo {
     /// The main worktree, canonicalized. Never modified by `wtm`.
     ///
-    /// For a bare repository this is the repository directory itself: a
+    /// For a bare repository this is the repository directory itself. A
     /// bare clone with linked worktrees is a supported layout, and git
     /// reports it in the same position.
     pub main: PathBuf,
@@ -73,8 +73,8 @@ impl Repo {
             .map_err(|_| Error::NotARepo(from.to_path_buf()))?;
 
         // The first record of `worktree list` is always the main worktree,
-        // which is not otherwise derivable: a repository may keep its git
-        // directory somewhere else entirely.
+        // which is not otherwise derivable, because a repository may keep
+        // its git directory somewhere else entirely.
         let first = git
             .worktrees(from)?
             .into_iter()
@@ -122,7 +122,7 @@ pub fn base_of(git: &Git, repo: &Repo, worktree: &Path) -> Option<Oid> {
     git.merge_base(&repo.main, head.as_str(), &default_branch)
 }
 
-/// Everything `wtm ls` shows, derived at call time: no field of it is read
+/// Everything `wtm ls` shows, derived at call time. No field of it is read
 /// from stored state.
 pub struct WorktreeView {
     pub git: GitWorktree,
@@ -131,7 +131,7 @@ pub struct WorktreeView {
     pub base: Option<Oid>,
 }
 
-/// The worktrees of a workspace, enriched with the derived fields. Costs a
+/// The worktrees of a workspace, with the derived fields added. Costs a
 /// subprocess per worktree; `Repo::worktrees` is the cheap call for code that
 /// only needs to find one by name.
 pub fn view(git: &Git, workspace: &Workspace) -> Result<Vec<WorktreeView>> {

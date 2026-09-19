@@ -7,7 +7,7 @@ use wtm::git::Git;
 use wtm::repo::{self, Repo};
 use wtm::workspace::Workspace;
 
-// These replace stored state: every one is a fact `wtm` could have written
+// These replace stored state. Every one is a fact `wtm` could have written
 // down and instead derives.
 
 fn json(output: Vec<u8>) -> serde_json::Value {

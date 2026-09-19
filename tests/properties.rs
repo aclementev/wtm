@@ -8,8 +8,8 @@ use wtm::name::WorktreeName;
 use wtm::repo::{Repo, RepoId};
 use wtm::workspace::Workspace;
 
-/// A workspace over paths that need not exist: every method under test is a
-/// path join or its inverse.
+/// A workspace over paths that need not exist, since every method under
+/// test is a path join or its inverse.
 fn workspace() -> Workspace {
     let main = PathBuf::from("/repos/monorepo");
     Workspace::new(

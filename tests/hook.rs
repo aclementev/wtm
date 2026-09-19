@@ -93,7 +93,7 @@ fn a_failing_hook_keeps_a_usable_worktree_and_exits_three() {
     assert!(stderr.contains("exit 7"), "{stderr}");
     assert!(stderr.contains("wtm init task"), "the rerun hint: {stderr}");
 
-    // The worktree is not a casualty: git knows it and it is checked out.
+    // The worktree is not a casualty. Git knows it, and it is checked out.
     assert_eq!(repo.git_in(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]), "task");
     assert!(worktree.join("file0.txt").is_file());
 
@@ -126,8 +126,8 @@ fn quiet_discards_the_hooks_output_but_not_its_failure() {
     );
 }
 
-/// The outcome is reported in band and nowhere else, so a worktree whose hook
-/// failed must be indistinguishable on disk from one whose hook passed.
+/// wtm reports the outcome in band and nowhere else, so a worktree whose
+/// hook failed must be indistinguishable on disk from one whose hook passed.
 /// Comparing the two catches any status file a later change might add.
 #[test]
 fn a_hooks_outcome_is_never_written_down() {
@@ -153,7 +153,7 @@ fn a_hooks_outcome_is_never_written_down() {
 fn a_missing_default_hook_is_silent_but_a_configured_one_is_refused() {
     let repo = RepoBuilder::new("hook-missing").build();
 
-    // Nothing configured and no wtm-init.sh: not worth a word.
+    // Nothing configured and no wtm-init.sh, so not worth a word.
     let quiet = repo.wtm().args(["new", "nohook"]).output().unwrap();
     assert!(quiet.status.success());
     assert!(

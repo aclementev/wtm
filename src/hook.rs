@@ -12,7 +12,7 @@ use crate::ui::Ui;
 
 /// What resolving the init hook came to. Any path here is absolute.
 ///
-/// `--no-init` and an absent default `wtm-init.sh` both give `Skip`: neither
+/// `--no-init` and an absent default `wtm-init.sh` both give `Skip`. Neither
 /// is worth reporting, and nothing downstream needs to tell them apart. An
 /// absent hook that someone did configure is `Unusable` instead.
 pub enum Hook {
@@ -70,13 +70,13 @@ pub fn inspect(path: PathBuf, origin: Origin) -> Hook {
 
 /// The `WTM_HOOK_*` environment a hook is given.
 ///
-/// The prefix is load-bearing. `WTM_<KEY>` names are configuration read *by*
-/// wtm, so sharing one namespace would mean a hook that starts a long-lived
-/// process leaks this worktree's base into every later wtm run under it.
+/// The prefix keeps these apart from `WTM_<KEY>`, which wtm reads as
+/// configuration. Under one namespace, a hook that starts a long-lived
+/// process would hand this worktree's base to every later wtm run under it.
 ///
-/// Every field is exported on every run, so a hook may use `set -u`. One that
-/// does not apply — `method` for a rerun, `base_sha` for a branch that already
-/// existed — is empty rather than missing.
+/// Every field is exported on every run, so a hook may use `set -u`. A field
+/// that does not apply is empty rather than missing: `method` after a rerun,
+/// `base_sha` for a branch that already existed.
 pub struct HookEnv {
     pub root: PathBuf,
     pub name: String,

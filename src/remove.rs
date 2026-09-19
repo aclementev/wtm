@@ -93,8 +93,8 @@ fn prune_empty_parents(path: &Path, stop: &Path) {
     }
 }
 
-/// Removing the directory the caller is standing in leaves their shell in a
-/// path that no longer exists, so it is refused rather than surprising them.
+/// Removing the directory the caller is standing in would leave their shell
+/// in a path that no longer exists, so `rm` refuses instead.
 fn refuse_if_inside(path: &Path) -> Result<()> {
     let Ok(cwd) = std::env::current_dir() else {
         return Ok(());
