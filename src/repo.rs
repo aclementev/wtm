@@ -122,8 +122,8 @@ pub fn base_of(git: &Git, repo: &Repo, worktree: &Path) -> Option<Oid> {
     git.merge_base(&repo.main, head.as_str(), &default_branch)
 }
 
-/// Everything `wtm ls` shows, derived at call time. No field is read from
-/// stored state; see `DESIGN.md` 2.2 for where each one comes from.
+/// Everything `wtm ls` shows, derived at call time: no field of it is read
+/// from stored state.
 pub struct WorktreeView {
     pub git: GitWorktree,
     pub name: WorktreeName,
