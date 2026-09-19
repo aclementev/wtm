@@ -31,8 +31,12 @@ pub enum Error {
     #[error("{0} is locked; unlock it with `git worktree unlock` or pass --force")]
     Locked(PathBuf),
 
-    #[error("init hook {} failed with exit code {code}", path.display())]
-    HookFailed { path: PathBuf, code: i32 },
+    #[error("init hook failed (exit {code}); worktree kept at {}; rerun with: wtm init {name}", worktree.display())]
+    HookFailed {
+        code: i32,
+        worktree: PathBuf,
+        name: String,
+    },
 
     #[error("copy-on-write cloning is unavailable: {reason}")]
     CloneUnsupported { reason: String },

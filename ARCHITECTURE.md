@@ -59,7 +59,7 @@ src/
     parse.rs      bytes -> Index (v2, v3, v4)
     write.rs      Index -> bytes (same version as source, checksum)
     stat.rs       `rewrite_stat(&mut Index, root, now)`; racy smudge
-  hook.rs         init hook resolution and execution; `HookEnv`
+  hook.rs         `Hook` (what resolution came to), the one stat, `HookEnv`, execution
   create.rs       `wtm new` orchestration; `Rollback` guard
   remove.rs       `wtm rm`; rename to trash; synchronous delete
   reaper.rs       detach (setsid, fds, priorities) and `sweep(roots)` with flock
@@ -297,12 +297,15 @@ pub enum BranchState { Absent, Free, CheckedOut(PathBuf) }
 pub struct Plan { pub source_head: Oid, pub branch: BranchAction }
 pub enum BranchAction { Create { base: Oid }, Reuse }
 
+/// Per-invocation decisions that are not configuration (DESIGN.md 3).
+pub struct Options { pub branch: Option<String>, pub no_init: bool }
+
 pub fn derive(ws: &Workspace, config: &Config, name: WorktreeName,
-              branch: Option<&str>) -> Result<Request>;                       // pure
+              options: &Options) -> Result<Request>;                          // pure
 pub fn observe(git: &Git, ws: &Workspace, req: &Request) -> Result<Observed>;
 pub fn check(req: &Request, obs: &Observed) -> Result<Plan>;                  // pure
 pub fn run(git: &Git, ui: &Ui, ws: &Workspace, config: &Config, name: WorktreeName,
-           branch: Option<&str>) -> Result<()>;
+           options: &Options) -> Result<()>;
 
 /// Undo list for a failed creation. Each step that makes something pushes a
 /// closure; `disarm()` on success. Drop runs the closures in reverse.
@@ -320,17 +323,33 @@ pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> Result<SweepStats>;
 
 ### 3.9 Hook
 
+Resolution itself is not here: `config::load` joins each layer's relative
+path to the base that layer implies (DESIGN.md 7), so `Config.init` is
+already absolute and the rule lives on the same lines as the layers it
+governs. What remains is looking at the file and running it.
+
 ```rust
+/// What the configured hook turned out to be. `Skip` covers both `--no-init`
+/// and an absent default, because neither is worth a word; the `Origin` is
+/// what separates an absent default from an absent configured file.
+pub enum Hook { Skip, Run(PathBuf), Unusable { path: PathBuf, origin: Origin, reason: &'static str } }
+impl Hook {
+    /// The hook to run, or `None`. The refusal lives here so `wtm new` and
+    /// `wtm init` cannot word it differently.
+    pub fn path(&self) -> Result<Option<&Path>>;
+}
+pub fn inspect(path: PathBuf, origin: Origin) -> Hook;   // the one look at the filesystem
+
 /// Exported as `WTM_HOOK_*`. The prefix separates output-to-a-hook from the
-/// `WTM_<KEY>` names that are input-to-wtm; see DESIGN.md 7.
+/// `WTM_<KEY>` names that are input-to-wtm; see DESIGN.md 7. All eight are
+/// always set; one that does not apply is empty.
 pub struct HookEnv { pub root, name, branch, base_ref, base_sha, main, repo_id, method }
-/// Outcome of the hook. Returned to the caller, reported immediately by
-/// `ui` and the exit code, and never written to disk (DESIGN.md 2.2).
-pub enum InitStatus { Ok, Failed { exit_code: i32 }, Skipped }
-pub enum HookResolution { File(PathBuf), DefaultMissing, ConfiguredMissing(PathBuf, Origin) }
-pub fn resolve(config: &Config, source: &Path) -> HookResolution;
-pub fn run(path: &Path, cwd: &Path, env: &HookEnv, ui: &Ui) -> Result<InitStatus>;
+pub fn run(path: &Path, env: &HookEnv, ui: &Ui) -> Result<()>;
 ```
+
+There is no `InitStatus`. Resolution is a precondition, so by the time `run`
+is called the only outcomes are success and `Error::HookFailed`, and the
+skipped case never reaches it.
 
 ### 3.10 Errors
 
@@ -341,7 +360,7 @@ pub enum Error {
     Git { args: Vec<String>, status: i32, stderr: String },   // 1
     InProgress(&'static str),               // 1, names the operation
     Dirty(PathBuf),                         // 4
-    HookFailed { path: PathBuf, code: i32 },// 3
+    HookFailed { code: i32, worktree: PathBuf, name: String },  // 3
     CloneUnsupported { reason: String },    // 1, only with mode = cow
     BranchCheckedOut { branch: String, at: PathBuf },   // 1
     Io { path: PathBuf, source: std::io::Error },       // 1

@@ -114,6 +114,14 @@ impl Repo {
     }
 }
 
+/// What a worktree branched from. Derived rather than remembered, so it is
+/// still available to `wtm init` long after the base that was asked for.
+pub fn base_of(git: &Git, repo: &Repo, worktree: &Path) -> Option<Oid> {
+    let head = git.rev_parse(worktree, "HEAD").ok()?;
+    let default_branch = repo.default_branch(git)?;
+    git.merge_base(&repo.main, head.as_str(), &default_branch)
+}
+
 /// Everything `wtm ls` shows, derived at call time. No field is read from
 /// stored state; see `DESIGN.md` 2.2 for where each one comes from.
 pub struct WorktreeView {

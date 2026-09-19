@@ -124,6 +124,7 @@ absent from a layer on purpose rather than by omission.
 | `base` | `--base` | `WTM_BASE` | yes | — | `origin/HEAD` |
 | `branch_prefix` | — | `WTM_BRANCH_PREFIX` | — | yes | `""` |
 | `fetch` | `--fetch` | `WTM_FETCH` | — | yes | `false` |
+| `init` | `--init` | `WTM_INIT` | yes | yes | `wtm-init.sh` |
 
 Higher layers win, left to right. Project config is `<repo>/.wtm/config.toml`,
 read from the **main worktree**; global config is
@@ -134,7 +135,9 @@ a repository cannot set them: cloning a repo must never relocate your
 worktrees, rename your branches, or add a network round-trip to every
 creation. A project file that sets one is an error naming the file and the
 key. `base` describes the repository, so a global default for it would be
-meaningless.
+meaningless. `init` is the one key both files may set: which hook a project
+needs is the project's business, and where someone keeps their own is
+theirs. Like `dir`, a leading `~` in it is expanded.
 
 ```toml
 # ~/.config/wtm/config.toml
@@ -147,8 +150,8 @@ base = "origin/HEAD"                   # any ref; "origin/HEAD" resolves the rem
 ```
 
 Everything else is a flag, because it is a per-invocation decision:
-`--init` and `--no-init` for the hook, `--clone-mode` for the creation
-method, `--wait` for synchronous removal. The two per-repository behaviours
+`--no-init` to skip the hook, `--clone-mode` for the creation method,
+`--wait` for synchronous removal. The two per-repository behaviours
 that would otherwise want settings already have their own files at the repo
 root: `wtm-init.sh` and `.worktreeinclude`.
 
@@ -244,9 +247,14 @@ wrapper changes directory to it. With no argument, prints the main worktree.
 
 ### 4.5 `wtm init [<name>] [--init <path>]`
 
-Reruns the init hook in the named worktree (default: the current one).
-Exit 3 on failure. It has all the provenance the hook needs without any
-stored state: the worktree path, its branch, and the repo.
+Reruns the init hook in the named worktree (default: the one the caller is
+standing in; the main worktree is not one of ours, so that is refused with
+exit 2). Exit 3 on failure. It has all the provenance the hook needs without
+any stored state: the worktree path, its branch, and the repo.
+`WTM_HOOK_BASE_SHA` is derived the way `ls` derives a base (section 2.2) and
+`WTM_HOOK_METHOD` is empty, since how the tree was first populated is not
+recorded. With no hook resolving at all it says so and exits 0, rather than
+looking like it did something.
 
 ### 4.6 `wtm gc [--wait] [--dir <path>] [--orphans]`
 
@@ -295,18 +303,22 @@ In order, each failing with a specific message:
    checkout, which the fallback path uses; 2.36 brought `worktree list
    --porcelain -z`, without which a worktree path containing a newline is
    misparsed.
-2. The source worktree is not mid-operation: none of `rebase-merge`,
+2. The init hook resolves to a file that can be run, unless `--no-init`
+   (section 7). Checked before anything is made, so a mistyped path costs
+   nothing; a hook that runs and fails is a different outcome with its own
+   exit code.
+3. The source worktree is not mid-operation: none of `rebase-merge`,
    `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
    `BISECT_LOG` exist in its gitdir. Otherwise fail; the caller must finish
    or abort that operation first.
-3. The source worktree is not sparse (`core.sparseCheckout` false and no
+4. The source worktree is not sparse (`core.sparseCheckout` false and no
    `info/sparse-checkout`). If it is, fall back to checkout with a warning;
    a clone would inherit the sparse patterns.
-4. The destination does not exist. If a directory of that name is in the
+5. The destination does not exist. If a directory of that name is in the
    trash, `--force` renames it out of the way with a new uuid; otherwise
    fail with "removed worktree pending deletion, use --force".
-5. The branch rules of 4.1.
-6. Method selection (section 6.2) when `clone.mode` is `auto` or `cow`.
+6. The branch rules of 4.1.
+7. Method selection (section 6.2) when `clone.mode` is `auto` or `cow`.
 
 ## 6. Creating a worktree
 
@@ -485,17 +497,30 @@ job (`git submodule update --init`).
 ## 7. Init hook
 
 Resolution: `--init`, else `WTM_INIT`, else project config, else global
-config, else `wtm-init.sh`. Relative paths are relative to the **source
-worktree's** root, so a gitignored hook in the main checkout still runs and
-so the new worktree needs no copy of it. Absolute paths are used as is. If
-the resolved file does not exist and it was the default, skip silently
-; if it was configured explicitly, fail with
-exit 3 after creating the worktree.
+config, else `wtm-init.sh`. A relative path typed this invocation — the flag
+or the variable — is relative to the caller's working directory, the way any
+other path argument is. A relative path stored in a file, and the
+`wtm-init.sh` default, are relative to the **source worktree's** root, so a
+gitignored hook in the main checkout still runs and the new worktree needs no
+copy of it. Absolute paths are used as is.
 
-Execution: the file must be executable; it is run directly (respecting its
-shebang), not through `sh`. Working directory: the new worktree. Stdout and
-stderr are passed through to `wtm`'s stderr, prefixed with `init: ` only
-when stderr is not a terminal. Environment: the caller's, plus
+The resolved file must exist and be executable, and this is checked as a
+precondition (section 5) rather than after the fact: a path that could never
+have run costs nothing. The one exception is the `wtm-init.sh` default, whose
+absence is the normal case and is skipped without a word. Any other layer
+naming a file that is missing, is not a file, or is not executable fails with
+exit 2, naming the path, the reason and the layer that set it.
+
+Execution: the file is run directly, respecting its shebang, not through
+`sh`. Working directory: the new worktree. Its stdout and stderr both go to
+`wtm`'s stderr, unprefixed and inherited rather than piped, so a hook keeps
+its terminal and its output arrives in real time and in its real order.
+`--quiet` discards both. Stdin is inherited only when `wtm`'s own stdin is a
+terminal, and is otherwise `/dev/null`: a hook may prompt a person, but must
+never be able to block an agent or a CI job on a read nobody will answer.
+Environment: the caller's, minus the five `GIT_*` variables every git
+subprocess drops (section 4) — a hook almost certainly runs git, and an
+inherited `GIT_DIR` would point it at the wrong repository — plus
 
 ```
 WTM_HOOK_ROOT      absolute path of the new worktree
@@ -507,6 +532,10 @@ WTM_HOOK_MAIN      absolute path of the main worktree
 WTM_HOOK_REPO_ID   repo id
 WTM_HOOK_METHOD    "cow" or "checkout"
 ```
+
+All eight are always set, so a hook may run under `set -u`. One that does not
+apply is set empty rather than left out: `WTM_HOOK_METHOD` for a `wtm init`
+rerun, which cannot know how the tree was populated.
 
 The `WTM_HOOK_` prefix is load-bearing. `WTM_<KEY>` names are **input** to
 `wtm`, read as configuration overrides (section 3); these are **output**,
@@ -524,7 +553,7 @@ kept at <path>; rerun with: wtm init <name>", and `wtm new` exits 3 after printi
 outcome is reported here and nowhere else; it is not written down. A hook that needs no shell can still be a small script;
 there is no inline-command form in v1.
 
-`--no-init` skips the hook.
+`--no-init` skips the hook, resolution and all.
 
 ## 8. Removing a worktree
 

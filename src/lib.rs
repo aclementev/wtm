@@ -5,6 +5,7 @@ pub mod create;
 pub mod docs;
 pub mod error;
 pub mod git;
+pub mod hook;
 pub mod name;
 pub mod remove;
 pub mod repo;
@@ -48,28 +49,34 @@ pub fn run(cli: Cli) -> Result<i32> {
     // Build order: the repository locates the project configuration, and the
     // configuration locates the data root.
     let git = Git::new()?;
-    let from = match cli.repo.clone() {
-        Some(path) => path,
-        None => std::env::current_dir().map_err(|e| Error::io("current directory", e))?,
-    };
+    // Kept apart from `from`: with `--repo` the two are not even in the same
+    // tree, and a relative `--init` follows the caller, not the repository.
+    let cwd = std::env::current_dir().map_err(|e| Error::io("current directory", e))?;
+    let from = cli.repo.clone().unwrap_or_else(|| cwd.clone());
     let repo = Repo::discover(&git, &from)?;
     let config = config::load(
         &flags(&cli),
         &|key| std::env::var(key).ok(),
         Some(&config::project_config_file(&repo.main)),
         Some(&config::global_config_file()),
+        &cwd,
+        &repo.main,
     )?;
     let workspace = Workspace::new(repo, workspace::canonical_root(&config.dir.value));
 
     match cli.command {
         Command::New(args) => {
+            let options = create::Options {
+                branch: args.branch.clone(),
+                no_init: args.no_init,
+            };
             create::run(
                 &git,
                 &ui,
                 &workspace,
                 &config,
                 WorktreeName::from_str(&args.name)?,
-                args.branch.as_deref(),
+                &options,
             )?;
             Ok(0)
         }
@@ -91,7 +98,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Doctor(args) => commands::doctor(&git, &ui, &workspace, args.json),
         Command::Config(args) => commands::config(&ui, &config, args.json),
-        Command::Init(_) => Err(Error::NotImplemented("wtm init")),
+        Command::Init(args) => commands::init(&git, &ui, &workspace, &config, args.name.as_deref()),
         Command::Gc(_) => Err(Error::NotImplemented("wtm gc")),
         Command::Shell(_) | Command::Agent(_) => unreachable!("answered above"),
     }
@@ -104,9 +111,14 @@ fn flags(cli: &Cli) -> FlagOverrides {
         dir: cli.dir.clone(),
         ..Default::default()
     };
-    if let Command::New(args) = &cli.command {
-        flags.base = args.base.clone();
-        flags.fetch = args.fetch.then_some(true);
+    match &cli.command {
+        Command::New(args) => {
+            flags.base = args.base.clone();
+            flags.fetch = args.fetch.then_some(true);
+            flags.init = args.init.clone();
+        }
+        Command::Init(args) => flags.init = args.init.clone(),
+        _ => {}
     }
     flags
 }
