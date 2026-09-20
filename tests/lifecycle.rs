@@ -149,16 +149,12 @@ fn new_refuses_a_branch_that_is_checked_out_elsewhere() {
 }
 
 #[test]
-fn a_usage_error_exits_two_and_an_unimplemented_command_says_so() {
+fn a_usage_error_exits_two() {
     let repo = RepoBuilder::new("lifecycle-exits").build();
 
     repo.wtm().args(["new", "bad name"]).assert().code(2);
     repo.wtm().args(["cd", "missing"]).assert().code(2);
-    repo.wtm()
-        .arg("gc")
-        .assert()
-        .code(2)
-        .stderr(predicates::str::contains("not implemented"));
+    repo.wtm().args(["rm", "never-existed"]).assert().code(2);
 }
 
 #[test]
@@ -228,6 +224,13 @@ fn rm_refuses_a_locked_worktree_and_force_removes_it() {
 
     repo.wtm().args(["rm", "pinned", "--force"]).assert().success();
     assert!(!path.exists());
+    // `git worktree prune` leaves a locked worktree registered however long
+    // its directory has been gone, so forcing one out has to unlock it first
+    // or git is left holding a record of a path that no longer exists.
+    assert!(
+        !repo.git(&["worktree", "list", "--porcelain"]).contains("pinned"),
+        "the forced removal left a registration git can never prune"
+    );
 }
 
 /// Git knows a worktree is gone for reasons a `stat` of the path would miss,

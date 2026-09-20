@@ -30,6 +30,13 @@ for the paths, lists and JSON it was asked for.
 work, or pass `--force` to discard it. Removal keeps the branch unless you
 pass `-d`.
 
+`wtm rm` returns as soon as the path is gone, which is before the files are
+unlinked: it renames the worktree into a trash directory and leaves a
+background process to empty it. The name is free again immediately, so
+`wtm new fix-login` straight after `wtm rm fix-login` works. Pass `--wait` to
+do the unlinking up front instead, or run `wtm gc --wait` to empty the trash
+now.
+
 Run `wtm ls --json` to see what exists, with each worktree's branch, the
 commit it branched from, and its age.
 
@@ -56,7 +63,6 @@ Create a worktree and print its path.
 - `--fetch`: Fetch the base's remote before creating
 - `--clone-mode`: How to populate the worktree
 - `--branch`: Branch name, when it differs from the worktree name
-- `--force`: Reuse a name whose directory is still in the trash
 
 ### `wtm ls`
 
@@ -92,7 +98,6 @@ Rerun the init hook in a worktree.
 Empty the trash and prune stale git metadata.
 
 - `--wait`: Sweep in the foreground instead of spawning a background reaper
-- `--orphans`: Delete directories whose repository is gone
 
 ### `wtm doctor`
 

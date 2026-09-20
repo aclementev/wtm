@@ -10,6 +10,7 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::hook::{self, HookEnv};
 use crate::name::WorktreeName;
+use crate::reaper;
 use crate::repo::{self, WorktreeView};
 use crate::ui::Ui;
 use crate::workspace::Workspace;
@@ -188,6 +189,68 @@ fn current_worktree(git: &Git, workspace: &Workspace) -> Result<WorktreeName> {
     workspace.name_of(&toplevel).ok_or_else(|| {
         Error::usage("not inside a wtm worktree; name one with `wtm init <name>`")
     })
+}
+
+/// Empties every trash under the data root and tidies what removal left
+/// behind. Without `--wait` the sweeping is handed to detached reapers, one
+/// per trash, which partition the entries between them through the locks.
+///
+/// `git worktree prune` runs for the current repository only. Pruning every
+/// repository under the root means resolving a `<repo-id>` directory back to
+/// its repository, which arrives with `wtm ls --all`.
+pub fn gc(git: &Git, ui: &Ui, workspace: &Workspace, wait: bool) -> Result<i32> {
+    let trashes = trash_dirs(workspace.root());
+
+    let failed = if wait {
+        let stats = reaper::sweep(&trashes, ui);
+        ui.progress(format!(
+            "swept {} entries, {} left to another sweep",
+            stats.deleted, stats.skipped
+        ));
+        stats.failed
+    } else {
+        for trash in &trashes {
+            reaper::spawn_detached_reaper(trash)?;
+        }
+        Vec::new()
+    };
+
+    ui.relay(&git.run(&workspace.repo.main, &["worktree", "prune"])?);
+    prune_empty_dirs(workspace.root());
+
+    if failed.is_empty() {
+        Ok(0)
+    } else {
+        Err(Error::Undeleted {
+            root: workspace.root().to_path_buf(),
+        })
+    }
+}
+
+/// Every `<repo-id>/.trash` directly under the data root. Nothing deeper is
+/// looked at, so a `.trash` anywhere else is never a sweep target.
+fn trash_dirs(root: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path().join(".trash"))
+        .filter(|trash| trash.is_dir())
+        .collect()
+}
+
+/// `remove_dir` succeeds only on an empty directory, which is the whole test
+/// for whether one of these is finished with. A repository directory holding
+/// worktrees, or a trash still being swept, simply refuses.
+fn prune_empty_dirs(root: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let _ = std::fs::remove_dir(entry.path().join(".trash"));
+        let _ = std::fs::remove_dir(entry.path());
+    }
 }
 
 pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {

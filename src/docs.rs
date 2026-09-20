@@ -17,9 +17,11 @@ pub fn skill() -> String {
         if let Some(about) = sub.get_about() {
             out.push_str(&format!("{about}.\n"));
         }
+        // Hidden arguments are how wtm re-executes itself; an agent reading
+        // this should no more type them than a person reading `--help`.
         let arguments: Vec<String> = sub
             .get_arguments()
-            .filter(|arg| arg.get_id() != "help")
+            .filter(|arg| arg.get_id() != "help" && !arg.is_hide_set())
             .map(describe)
             .collect();
         if !arguments.is_empty() {
@@ -68,6 +70,13 @@ for the paths, lists and JSON it was asked for.
 `wtm rm` refuses a worktree with uncommitted changes and exits 4. Commit the
 work, or pass `--force` to discard it. Removal keeps the branch unless you
 pass `-d`.
+
+`wtm rm` returns as soon as the path is gone, which is before the files are
+unlinked: it renames the worktree into a trash directory and leaves a
+background process to empty it. The name is free again immediately, so
+`wtm new fix-login` straight after `wtm rm fix-login` works. Pass `--wait` to
+do the unlinking up front instead, or run `wtm gc --wait` to empty the trash
+now.
 
 Run `wtm ls --json` to see what exists, with each worktree's branch, the
 commit it branched from, and its age.

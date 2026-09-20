@@ -311,14 +311,28 @@ pub fn run(git: &Git, ui: &Ui, ws: &Workspace, config: &Config, name: WorktreeNa
 /// closure; `disarm()` on success. Drop runs the closures in reverse.
 struct Rollback { steps: Vec<Box<dyn FnOnce()>>, armed: bool }
 
-pub struct Options { pub force: bool, pub delete_branch: bool, pub force_delete_branch: bool }
+pub struct Options { pub force: bool, pub wait: bool,
+                     pub delete_branch: bool, pub force_delete_branch: bool }
 pub fn remove(git: &Git, ui: &Ui, ws: &Workspace, name: &WorktreeName,
               options: &Options) -> Result<i32>;
-pub fn delete_tree_sync(path: &Path) -> Result<Vec<PathBuf>>;   // returns paths it could not remove
+```
 
-pub fn spawn_detached_reaper(exe: &Path, trash: &Path) -> Result<()>;
-pub fn detach_self() -> Result<()>;           // setsid, fd redirection, priorities; called by `gc --reap --detach`
-pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> Result<SweepStats>;
+Deletion lives in `reaper.rs`, with the sweep that is its heaviest user.
+`remove` calls it for `--wait` and when the rename into the trash fails.
+
+```rust
+/// Paths it could not remove, empty on success. Not a `Result`: a tree that
+/// half resists is neither a failure nor a success until someone counts.
+/// A path that is already gone is success, which a resumed sweep relies on.
+pub fn delete_tree_sync(path: &Path) -> Vec<PathBuf>;
+
+/// What a sweep did. `skipped` counts entries that were another sweeper's,
+/// whether it held the lock or had already unlinked them.
+pub struct SweepStats { pub deleted: usize, pub skipped: usize, pub failed: Vec<PathBuf> }
+
+pub fn spawn_detached_reaper(trash: &Path) -> Result<()>;   // no-op under WTM_NO_REAPER
+pub fn detach_self() -> Result<()>;   // setsid, fd redirection, priorities; called by `gc --detach`
+pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> SweepStats;
 ```
 
 ### 3.9 Hook

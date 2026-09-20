@@ -144,30 +144,46 @@ exit code 3; `wtm init` with a fixed hook then exits 0.
 
 ## 5. Removal and reaping
 
-- `wtm rm` on a clean worktree returns within 200 ms on a 5k-file test
-  repo regardless of size, the path is gone immediately, `git worktree
-  list` no longer shows it, and exactly one entry exists in `.trash`.
+- `wtm rm` on a clean worktree returns with the path gone, `git worktree
+  list` no longer showing it, and exactly one entry in `.trash` still
+  holding every file. The entry is the assertion that matters: a removal
+  that went back to deleting synchronously leaves none. A wall-clock bound
+  rides along at two seconds, loose on purpose, because a tight one fails on
+  a loaded machine for reasons that have nothing to do with the code.
+- Tests set `WTM_NO_REAPER` unless they are testing reaping. `wtm rm` spawns
+  a reaper for the entry it has just made, so what is in the trash cannot be
+  asserted while one is racing to empty it.
 - Dirty worktree: exit 4, nothing changed; `--force`: removed.
 - `-d` on an unmerged branch: worktree removed, branch kept, message
   printed; `-D`: branch gone.
-- Cross-filesystem trash (simulated by pointing `--dir` at a tmpfs on
-  Linux CI, or a second APFS volume from a disk image on macOS): the rename
-  fails with `EXDEV`, the synchronous delete runs, exit 0.
+- A trash that cannot be renamed into: the synchronous delete runs and the
+  command exits 0. Provoked without needing a second filesystem by leaving a
+  file where the `.trash` directory has to be created, which is a real
+  failure at the real boundary rather than an injected one.
+- The `EXDEV` case itself needs a second filesystem, which not every machine
+  has. `WTM_TEST_XDEV_DIR` names a directory on one; the test checks
+  `st_dev` really differs and reports that it did not run when the variable
+  is unset, rather than passing quietly. CI sets it.
 - Zero-state invariant: after a full lifecycle (`new`, `init`, `ls`, `rm`,
   `gc`) on a scratch HOME, the only paths `wtm` created outside the data
   root and the repo are none. Assert by snapshotting the filesystem under
   `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`, `$XDG_CACHE_HOME` and `$HOME`
   before and after, allowing only the reaper log when `WTM_DEBUG` is set.
   This is the test that keeps the design honest as features are added.
-- Sweep concurrency: populate a trash with several entries, run two
-  `wtm gc --wait` processes at once, assert both exit 0 and the trash is
-  empty. Sweep resumption: start a sweep as a subprocess on a large entry,
+- Sweep concurrency: populate a trash, run two `wtm gc --wait` at once,
+  assert both exit 0 and that the deletions they report add up to exactly
+  what was planted. The sum is the part with teeth: emptying the trash
+  happens with or without the locks, but only the locks stop both sweepers
+  claiming every entry. The sum holds however the two are scheduled. Sweep resumption: start a sweep as a subprocess on a large entry,
   `SIGKILL` it mid-way, assert the lock is free (a new sweeper acquires it)
   and a second sweep empties the trash.
-- Reaper detachment: run `wtm rm` under `setsid` with stdout captured by a
-  pipe; the command must return before the trash is empty and the pipe
-  must reach EOF immediately (the fd-leak regression that would hang
-  `$(wtm rm x)`).
+- Reaper detachment: run `wtm rm` with stdout on a pipe over a trash big
+  enough that a sweep cannot finish quickly, read to end of file, then
+  assert the trash is still populated. A reaper holding the caller's stdout
+  could only reach end of file after an empty trash, so this needs no
+  timing threshold. This is the regression that would hang `$(wtm rm x)`.
+- The sweep is nobody's chore: plant a trash, run `wtm ls`, and it empties
+  on its own.
 
 ## 6. Output contracts and docs
 

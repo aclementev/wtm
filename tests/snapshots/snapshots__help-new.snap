@@ -43,8 +43,5 @@ Options:
       --branch <NAME>
           Branch name, when it differs from the worktree name
 
-      --force
-          Reuse a name whose directory is still in the trash
-
   -h, --help
           Print help (see a summary with '-h')

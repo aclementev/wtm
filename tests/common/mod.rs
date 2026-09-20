@@ -2,4 +2,4 @@
 
 pub mod repo;
 
-pub use repo::{RepoBuilder, TestRepo};
+pub use repo::{RepoBuilder, TestRepo, count_entries};

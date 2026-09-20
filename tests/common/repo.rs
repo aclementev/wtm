@@ -137,7 +137,18 @@ impl TestRepo {
 
     /// A `wtm` invocation isolated from the developer's own home directory, so
     /// no real configuration file can influence a test.
+    ///
+    /// Background reaping is off. `wtm rm` spawns a reaper for the entry it
+    /// has just made, so anything asserting what is in the trash would
+    /// otherwise be racing it. Tests that want a real reaper say so.
     pub fn wtm(&self) -> assert_cmd::Command {
+        let mut command = self.wtm_reaping();
+        command.env("WTM_NO_REAPER", "1");
+        command
+    }
+
+    /// As `wtm`, but background reapers are left switched on.
+    pub fn wtm_reaping(&self) -> assert_cmd::Command {
         let mut command = assert_cmd::Command::cargo_bin("wtm").expect("build wtm");
         command
             .current_dir(&self.main)
@@ -145,8 +156,34 @@ impl TestRepo {
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("share"))
             .env("WTM_DIR", &self.data)
-            .env_remove("WTM_DEBUG");
+            .env_remove("WTM_DEBUG")
+            .env_remove("WTM_NO_REAPER");
         command
+    }
+
+    pub fn trash(&self, repo_id: &str) -> PathBuf {
+        self.data.join(repo_id).join(".trash")
+    }
+
+    /// Fills the trash with entries that no worktree ever occupied. A sweep
+    /// cannot tell the difference, and this is far cheaper than creating and
+    /// removing that many worktrees.
+    pub fn plant_trash(&self, repo_id: &str, entries: usize, files: usize) {
+        let trash = self.trash(repo_id);
+        for entry in 0..entries {
+            for file in 0..files {
+                let dir = trash
+                    .join(format!("planted-{entry}"))
+                    .join(format!("d{}", file % 20));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join(format!("f{file}")), "x").unwrap();
+            }
+        }
+    }
+
+    pub fn is_registered(&self, path: &Path) -> bool {
+        self.git(&["worktree", "list", "--porcelain"])
+            .contains(&path.display().to_string())
     }
 
     pub fn worktree_path(&self, repo_id: &str, name: &str) -> PathBuf {
@@ -160,6 +197,19 @@ impl TestRepo {
         let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         json["repo"]["id"].as_str().unwrap().to_string()
     }
+}
+
+/// Every file and directory under `path`, the root included. Counting rather
+/// than naming, so a test asserts that a tree is still there without
+/// depending on what happens to be in it.
+pub fn count_entries(path: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return usize::from(path.symlink_metadata().is_ok());
+    };
+    1 + entries
+        .flatten()
+        .map(|e| count_entries(&e.path()))
+        .sum::<usize>()
 }
 
 impl Drop for TestRepo {

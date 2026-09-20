@@ -78,10 +78,6 @@ pub struct NewArgs {
     /// Branch name, when it differs from the worktree name
     #[arg(long, value_name = "NAME")]
     pub branch: Option<String>,
-
-    /// Reuse a name whose directory is still in the trash
-    #[arg(long)]
-    pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -134,9 +130,14 @@ pub struct GcArgs {
     #[arg(long)]
     pub wait: bool,
 
-    /// Delete directories whose repository is gone
-    #[arg(long)]
-    pub orphans: bool,
+    /// Detach into the background, lower priority and sweep. How wtm
+    /// re-executes itself as a reaper; not meant to be typed.
+    #[arg(long, hide = true, requires = "trash")]
+    pub detach: bool,
+
+    /// Sweep only this directory instead of every trash under the data root.
+    #[arg(long, hide = true, value_name = "PATH")]
+    pub trash: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -181,4 +182,3 @@ pub enum CloneModeArg {
     /// Always let git write the files
     Checkout,
 }
-
