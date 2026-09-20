@@ -163,6 +163,11 @@ Unknown keys are an error naming the file and key. `wtm config` prints the
 effective merged config with the origin of each value.
 
 `WTM_<KEY>` names are reserved for configuration, which is input to `wtm`.
+Two exceptions carry no configuration and name themselves: `WTM_DEBUG` sends
+the reaper's output to `$XDG_CACHE_HOME/wtm/reaper.log` instead of
+`/dev/null`, and `WTM_NO_REAPER` stops wtm spawning background reapers at
+all. The tests need the second one: `wtm rm` spawns a reaper for the entry
+it has just made, so what is in the trash cannot otherwise be asserted.
 Anything `wtm` exports to a child process is named `WTM_HOOK_<...>` instead,
 so that setting one can never be mistaken for the other (section 7).
 
@@ -195,9 +200,8 @@ Creates a worktree and prints its absolute path on stdout, nothing else.
 
 Flags: `--base <ref>`, `--dir <path>`,
 `--init <path>`, `--no-init`, `--fetch`, `--clone-mode auto|cow|checkout`,
-`--branch <name>` (branch name if different from `<name>`), `--force`
-(reuse an existing branch even if it is checked out elsewhere is never
-allowed; `--force` only permits a `<name>` whose directory exists in trash).
+`--branch <name>` (branch name if different from `<name>`). Reusing a branch
+that is checked out elsewhere is never allowed, and there is no flag for it.
 
 Name rules: `<name>` matches `^[A-Za-z0-9._][A-Za-z0-9._/-]*$`, no `.` or
 `..` component, no empty component, no leading `-`, at most 200 bytes. It doubles as the branch name
@@ -260,11 +264,17 @@ says so and exits 0, rather than looking like it did something.
 ### 4.6 `wtm gc [--wait] [--dir <path>] [--orphans]`
 
 Sweeps every `.trash` under the data root (section 8.4), runs
-`git worktree prune` for every repo reachable from it, reports orphaned
-`<repo-id>` directories and deletes them with `--orphans`, and removes
-empty `<repo-id>` directories. `wtm ls --all` lists the same set without
-deleting anything, and ships with this command rather than before it. `--dir <path>` sweeps a non-default root. `--wait` runs the sweep
-in the foreground instead of spawning a reaper.
+`git worktree prune`, and removes empty `<repo-id>` directories.
+`--dir <path>` sweeps a non-default root. `--wait` runs the sweep in the
+foreground instead of spawning a reaper, and reports how many entries it
+deleted and how many it left to another sweep.
+
+`--orphans`, which deletes `<repo-id>` directories whose repository is gone,
+is the only thing here that would delete outside a `.trash`. It ships with
+`wtm ls --all`, which lists the same set without deleting anything, so that
+looking always comes before deleting. Pruning every repository under the
+root, rather than the current one, needs the same resolution from a
+`<repo-id>` directory back to its repository and arrives with them.
 
 ### 4.7 `wtm doctor [--json]`
 
@@ -315,9 +325,9 @@ In order, each failing with a specific message:
 4. The source worktree is not sparse (`core.sparseCheckout` false and no
    `info/sparse-checkout`). If it is, fall back to checkout with a warning;
    a clone would inherit the sparse patterns.
-5. The destination does not exist. If a directory of that name is in the
-   trash, `--force` renames it out of the way with a new uuid; otherwise
-   fail with "removed worktree pending deletion, use --force".
+5. The destination does not exist. A removed worktree never occupies one:
+   it is renamed under the trash with a suffix nothing asks for, so the name
+   is free the moment `wtm rm` returns.
 6. The branch rules of 4.1.
 7. Method selection (section 6.2) when `clone.mode` is `auto` or `cow`.
 
@@ -567,7 +577,8 @@ be a small script; there is no inline-command form in v1.
 resolve worktree by name (must be under the repo's data dir)
 refuse if cwd is inside it
 refuse if dirty and not --force            (git status --porcelain non-empty)
-if --wait or rm.wait: delete synchronously, then prune, done
+if --wait: delete synchronously, then prune, done
+if locked (only reachable with --force): git worktree unlock
 trash = <root>/<repo-id>/.trash            (mkdir -p)
 rename(<worktree>, <trash>/<name-with-slashes-replaced-by-->-<uuid>)
     EXDEV or EBUSY -> delete synchronously instead, with a note
@@ -581,6 +592,10 @@ fails instead of silently copying. `git worktree prune` is cheap: it only
 checks whether each registered path exists, and it takes git's own
 per-worktree metadata directory with it.
 
+Prune ignores a locked worktree however long its directory has been gone,
+which is why the unlock happens before the rename. Skipping it would leave
+git holding a record of a path that nothing can ever clear.
+
 ### 8.2 Synchronous delete
 
 Used for `--wait` and for the rename fallbacks. On macOS, first
@@ -591,10 +606,13 @@ directories that refuse. Remove with a recursive unlink that treats
 
 ### 8.3 The reaper
 
-`wtm` re-executes itself as `wtm gc --reap --detach` (hidden flags):
+`wtm` re-executes itself as `wtm gc --detach --trash <dir>` (hidden flags).
+`--trash` names the one directory to sweep, which is also why a reaper needs
+no repository and is answered before discovery:
 
 - child is created with `setsid()` in the pre-exec hook so terminal close
-  and shell exit cannot signal it;
+  and shell exit cannot signal it, and the parent gives it null streams so no
+  descriptor of the caller's is ever inherited, even briefly;
 - stdin, stdout and stderr are redirected to `/dev/null` (or to
   `$XDG_CACHE_HOME/wtm/reaper.log` when `WTM_DEBUG` is set). Leaving the
   caller's stdout open makes `$(wtm rm x)` hang until the reaper exits;
@@ -617,9 +635,12 @@ directory under it, for every entry in that directory:
 ```
 fd = open(entry, O_RDONLY | O_DIRECTORY)
 if flock(fd, LOCK_EX | LOCK_NB) fails with EWOULDBLOCK: skip (another sweeper owns it)
-delete entry synchronously (8.2), ENOENT is success
-rmdir entry; close(fd)
+delete entry synchronously (8.2), the entry directory included, ENOENT is success
+close(fd)
 ```
+
+An entry that has vanished between the listing and the open belongs to
+whoever unlinked it and is counted as theirs, not as a deletion of ours.
 
 The lock is on the entry's own inode: no lock files, released by the kernel
 if the sweeper dies, so a crashed sweep leaves a half-deleted tree that the

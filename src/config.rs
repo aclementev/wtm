@@ -166,7 +166,10 @@ pub fn load(
                     Origin::Env("WTM_INIT".into()),
                 ),
                 (
-                    project.init.as_deref().map(|p| source.join(expand_tilde(p))),
+                    project
+                        .init
+                        .as_deref()
+                        .map(|p| source.join(expand_tilde(p))),
                     project_origin(),
                 ),
                 (
@@ -265,6 +268,12 @@ fn xdg(var: &str, fallback: &str) -> PathBuf {
 
 pub fn default_data_dir() -> PathBuf {
     xdg("XDG_DATA_HOME", ".local/share").join("wtm/worktrees")
+}
+
+/// Where a reaper writes when `WTM_DEBUG` is set. The only file wtm creates
+/// outside the data root, which the zero-state test allows for that reason.
+pub fn reaper_log_file() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache").join("wtm/reaper.log")
 }
 
 pub fn global_config_file() -> PathBuf {

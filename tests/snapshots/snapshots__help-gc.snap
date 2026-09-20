@@ -10,6 +10,5 @@ Options:
       --repo <PATH>  Operate on the repository at this path instead of the current directory
       --wait         Sweep in the foreground instead of spawning a background reaper
       --dir <PATH>   Data root holding the worktrees
-      --orphans      Delete directories whose repository is gone
   -q, --quiet        Silence progress messages
   -h, --help         Print help

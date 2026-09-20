@@ -38,6 +38,9 @@ pub enum Error {
         name: String,
     },
 
+    #[error("could not remove everything under {}; the paths named above are still there", root.display())]
+    Undeleted { root: PathBuf },
+
     #[error("copy-on-write cloning is unavailable: {reason}")]
     CloneUnsupported { reason: String },
 
@@ -56,15 +59,12 @@ pub enum Error {
 
     #[error("{0}")]
     Index(String),
-
-    #[error("{0} is not implemented yet")]
-    NotImplemented(&'static str),
 }
 
 impl Error {
     pub fn exit_code(&self) -> i32 {
         match self {
-            Error::Usage(_) | Error::NotImplemented(_) => 2,
+            Error::Usage(_) => 2,
             Error::HookFailed { .. } => 3,
             Error::Dirty(_) | Error::Locked(_) => 4,
             _ => 1,

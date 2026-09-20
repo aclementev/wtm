@@ -7,6 +7,7 @@ pub mod error;
 pub mod git;
 pub mod hook;
 pub mod name;
+pub mod reaper;
 pub mod remove;
 pub mod repo;
 pub mod shell;
@@ -46,6 +47,23 @@ pub fn run(cli: Cli) -> Result<i32> {
         _ => {}
     }
 
+    // A reaper needs one directory and nothing else. Answering it here keeps
+    // repository discovery, and its git invocation, out of the background
+    // process entirely.
+    if let Command::Gc(args) = &cli.command {
+        if let (true, Some(trash)) = (args.detach, args.trash.as_ref()) {
+            reaper::detach_self()?;
+            let failed = reaper::sweep(std::slice::from_ref(trash), &ui).failed;
+            return if failed.is_empty() {
+                Ok(0)
+            } else {
+                Err(Error::Undeleted {
+                    root: trash.clone(),
+                })
+            };
+        }
+    }
+
     // Build order: the repository locates the project configuration, and the
     // configuration locates the data root.
     let git = Git::new()?;
@@ -63,6 +81,13 @@ pub fn run(cli: Cli) -> Result<i32> {
         &repo.main,
     )?;
     let workspace = Workspace::new(repo, workspace::canonical_root(&config.dir.value));
+
+    // Removal leaves bytes for later, so every command that gets this far
+    // pays one readdir to start collecting them. A reaper is only spawned
+    // when there is something to sweep.
+    if !matches!(cli.command, Command::Gc(_)) && has_entries(&workspace.trash()) {
+        reaper::spawn_detached_reaper(&workspace.trash())?;
+    }
 
     match cli.command {
         Command::New(args) => {
@@ -85,6 +110,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Rm(args) => {
             let options = remove::Options {
                 force: args.force,
+                wait: args.wait,
                 delete_branch: args.delete_branch,
                 force_delete_branch: args.force_delete_branch,
             };
@@ -99,9 +125,13 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Doctor(args) => commands::doctor(&git, &ui, &workspace, args.json),
         Command::Config(args) => commands::config(&ui, &config, args.json),
         Command::Init(args) => commands::init(&git, &ui, &workspace, &config, args.name.as_deref()),
-        Command::Gc(_) => Err(Error::NotImplemented("wtm gc")),
+        Command::Gc(args) => commands::gc(&git, &ui, &workspace, args.wait),
         Command::Shell(_) | Command::Agent(_) => unreachable!("answered above"),
     }
+}
+
+fn has_entries(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// Command-line values that correspond to configuration keys, collected into
