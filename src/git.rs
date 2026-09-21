@@ -183,6 +183,22 @@ impl Git {
         )
     }
 
+    /// The gitlink entries of the index, one per submodule. Mode 160000 is
+    /// what makes an entry a submodule rather than a file.
+    pub fn gitlinks(&self, cwd: &Path) -> Result<Vec<PathBuf>> {
+        let output = self.run(cwd, &["ls-files", "-z", "--stage"])?;
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter_map(|record| {
+                // "<mode> <oid> <stage>\t<path>"
+                let rest = record.strip_prefix(b"160000 ")?;
+                let tab = rest.iter().position(|byte| *byte == b'\t')?;
+                Some(PathBuf::from(OsStr::from_bytes(&rest[tab + 1..])))
+            })
+            .collect())
+    }
+
     pub fn worktrees(&self, cwd: &Path) -> Result<Vec<GitWorktree>> {
         let output = self.run(cwd, &["worktree", "list", "--porcelain", "-z"])?;
         Ok(parse_worktree_list(&output.stdout))

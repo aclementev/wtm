@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use crate::cli::CloneMode;
+use crate::clone::{self, Cloner, Method, Walker};
 use crate::config::{Config, Setting};
 use crate::error::{Error, Result};
+use crate::exclude::ExcludeSet;
 use crate::git::{Git, Oid};
 use crate::hook::{self, Hook, HookEnv};
 use crate::name::WorktreeName;
@@ -14,6 +17,7 @@ use crate::workspace::Workspace;
 pub struct Options {
     pub branch: Option<String>,
     pub no_init: bool,
+    pub clone_mode: CloneMode,
 }
 
 /// `wtm new` in four steps: derive what was asked for, observe what git and
@@ -37,7 +41,7 @@ pub fn run(
 
     let observed = observe(git, workspace, &request)?;
     let plan = check(&request, &observed)?;
-    create(git, ui, workspace, &request, &plan)?;
+    let method = create(git, ui, workspace, &request, &plan)?;
 
     ui.emit(request.dest.display().to_string());
 
@@ -45,14 +49,14 @@ pub fn run(
     // hook that fails still leaves a usable worktree behind.
     match &plan.hook {
         None => Ok(()),
-        Some(path) => hook::run(path, &hook_env(git, workspace, &request, &plan), ui),
+        Some(path) => hook::run(path, &hook_env(git, workspace, &request, &plan, method), ui),
     }
 }
 
 /// Reusing an existing branch ignores the base and warns about it, so
 /// handing that base to the hook would contradict the warning. We derive it
 /// from the merge-base instead, which is also all `wtm init` ever has.
-fn hook_env(git: &Git, ws: &Workspace, request: &Request, plan: &Plan) -> HookEnv {
+fn hook_env(git: &Git, ws: &Workspace, request: &Request, plan: &Plan, method: Method) -> HookEnv {
     let base_sha = match &plan.branch {
         BranchAction::Create { base } => Some(base.clone()),
         BranchAction::Reuse => repo::base_of(git, &ws.repo, &request.dest),
@@ -65,7 +69,7 @@ fn hook_env(git: &Git, ws: &Workspace, request: &Request, plan: &Plan) -> HookEn
         base_sha: base_sha.map(|oid| oid.to_string()).unwrap_or_default(),
         main: ws.repo.main.clone(),
         repo_id: ws.repo.id.to_string(),
-        method: "checkout".to_string(),
+        method: method.as_str().to_string(),
     }
 }
 
@@ -79,6 +83,7 @@ pub struct Request {
     pub base_spec: String,
     pub workers: usize,
     pub fetch: bool,
+    pub clone_mode: CloneMode,
     /// `None` for `--no-init`. The origin comes along because it decides
     /// whether an absent file is silent or an error.
     pub hook: Option<Setting<PathBuf>>,
@@ -134,6 +139,7 @@ pub fn derive(
         // makes the fallback checkout parallel at all.
         workers: std::thread::available_parallelism().map_or(1, |n| n.get()),
         fetch: config.fetch.value,
+        clone_mode: options.clone_mode,
         hook: (!options.no_init).then(|| config.init.clone()),
         name,
     })
@@ -231,9 +237,30 @@ pub fn check(request: &Request, observed: &Observed) -> Result<Plan> {
     })
 }
 
-fn create(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) -> Result<()> {
-    match act(git, ui, ws, request, plan) {
-        Ok(()) => Ok(()),
+/// Sequences the steps and owns the rollback. Returns how the files got
+/// there, which the init hook is told.
+fn create(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) -> Result<Method> {
+    let parent = ws.repo_dir();
+    std::fs::create_dir_all(&parent).map_err(|e| Error::io(&parent, e))?;
+
+    let cloner = clone::platform_cloner();
+    // Before anything is made, so `--clone-mode cow` where cloning is
+    // impossible costs nothing and leaves nothing to undo.
+    let decision = clone::decide(
+        git,
+        request.clone_mode,
+        (!ws.repo.bare).then_some(ws.repo.main.as_path()),
+        &parent,
+        cloner.as_ref(),
+    )?;
+    if decision.surprising {
+        ui.warn(&decision.reason);
+    } else {
+        ui.progress(&decision.reason);
+    }
+
+    match act(git, ui, ws, request, plan, decision.method, cloner.as_ref()) {
+        Ok(()) => Ok(decision.method),
         Err(error) => {
             undo(git, ui, ws, request, plan);
             Err(error)
@@ -241,7 +268,15 @@ fn create(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) ->
     }
 }
 
-fn act(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) -> Result<()> {
+fn act(
+    git: &Git,
+    ui: &Ui,
+    ws: &Workspace,
+    request: &Request,
+    plan: &Plan,
+    method: Method,
+    cloner: &dyn Cloner,
+) -> Result<()> {
     if let Some(parent) = request.dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
@@ -261,21 +296,26 @@ fn act(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) -> Re
         ],
     )?);
 
-    ui.progress("checking out");
-    let workers = format!("checkout.workers={}", request.workers);
-    ui.relay(&git.run(
-        &request.dest,
-        &[
-            "-c",
-            &workers,
-            "-c",
-            "checkout.thresholdForParallelism=100",
-            "checkout",
-            "-q",
-            "--detach",
-            plan.source_head.as_str(),
-        ],
-    )?);
+    match method {
+        Method::Cow => populate_by_clone(git, ui, ws, request, cloner)?,
+        Method::Checkout => {
+            ui.progress("checking out");
+            let workers = format!("checkout.workers={}", request.workers);
+            ui.relay(&git.run(
+                &request.dest,
+                &[
+                    "-c",
+                    &workers,
+                    "-c",
+                    "checkout.thresholdForParallelism=100",
+                    "checkout",
+                    "-q",
+                    "--detach",
+                    plan.source_head.as_str(),
+                ],
+            )?);
+        }
+    }
 
     // Detaching at the source's HEAD first means git now rewrites only the
     // files that differ between source and base.
@@ -295,6 +335,53 @@ fn act(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) -> Re
         }
     }
 
+    Ok(())
+}
+
+/// Fills a worktree that holds nothing but the `.git` file git wrote.
+fn populate_by_clone(
+    git: &Git,
+    ui: &Ui,
+    ws: &Workspace,
+    request: &Request,
+    cloner: &dyn Cloner,
+) -> Result<()> {
+    let source = &ws.repo.main;
+
+    ui.progress("cloning");
+    let set = ExcludeSet::compute(git, source)?;
+    let stats = Walker::new(cloner, &set, ui).run(source, &request.dest)?;
+    ui.progress(format!(
+        "cloned {} subtrees, recursed into {} directories",
+        stats.tree_clones, stats.dirs_recursed
+    ));
+
+    ui.relay(&git.run(&request.dest, &["read-tree", "HEAD"])?);
+    empty_submodules(git, &request.dest)?;
+
+    // `read-tree` leaves every entry's stat data zeroed, and checkout reads
+    // cached stat rather than hashing, so a `reset --hard` on top of it
+    // would rewrite every file from the object store and waste the clone.
+    // The refresh pays for one hash of the tree, finds the content already
+    // correct and writes the true stat back. It exits non-zero when a file
+    // needs updating, which is what we asked it to find out.
+    let _ = git.run(&request.dest, &["update-index", "--refresh", "-q"]);
+    ui.relay(&git.run(&request.dest, &["reset", "-q", "--hard"])?);
+    Ok(())
+}
+
+/// `git worktree add` leaves submodule directories empty and so does
+/// `wtm`. Cloning their contents would carry `.git` files pointing at the
+/// source's gitdir and break every git command inside them. Filling them
+/// is the init hook's job.
+fn empty_submodules(git: &Git, dest: &Path) -> Result<()> {
+    for submodule in git.gitlinks(dest)? {
+        let path = dest.join(submodule);
+        if path.exists() {
+            std::fs::remove_dir_all(&path).map_err(|e| Error::io(&path, e))?;
+        }
+        std::fs::create_dir_all(&path).map_err(|e| Error::io(&path, e))?;
+    }
     Ok(())
 }
 
@@ -332,6 +419,7 @@ mod tests {
             base_spec: "origin/HEAD".to_string(),
             workers: 4,
             fetch: false,
+            clone_mode: CloneMode::Auto,
         }
     }
 

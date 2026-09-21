@@ -13,9 +13,10 @@ struct with no invariants) are not written.
   temporary directory: `RepoBuilder::new().files(n).ignored("node_modules", 50)
   .scattered_ignored("__pycache__", 20).symlink_to_dir().submodule().dirty_file()
   .include(".env.local").build()`. Deterministic content from a seed.
-- Temporary directories live under `target/tmp/` (same volume as the
-  checkout), never under `/tmp`: on macOS `/tmp` is a separate APFS volume
-  and every clone would fail with `EXDEV`.
+- Temporary directories live under `target/tmp/`, which `cargo clean`
+  removes and no other user shares. On macOS this is not about volumes:
+  `/private/tmp` and `$TMPDIR` are on the same data volume as `$HOME` and
+  clone from it perfectly well.
 - A `TestGit` helper runs git with the same scrubbed environment as the
   binary, so oracle and subject see identical repos.
 - The binary is exercised through `assert_cmd` for end-to-end tests and
@@ -81,12 +82,11 @@ matching. Also assert the source's untracked and ignored files that are
 not included are absent, and that a symlink to a directory at the top
 level is still a symlink in the result (the `CLONE_NOFOLLOW` regression).
 
-### 2.4 ExcludeSet equivalence
-
-If the single `git status --porcelain=v2 --ignored=matching` query is
-implemented, a property test feeds random repos to both it and the three
-`ls-files` queries and asserts the resulting `ExcludeSet` classifications
-are identical for every path in the tree.
+Listings alone cannot tell a clone from a checkout that arrived at the
+same contents, and the checkout is what a mistake in the creation sequence
+silently falls back to. On the CoW path, assert that an untouched tracked
+file still carries the source's mtime: a checkout stamps the current
+time, a clone does not.
 
 ## 3. Property tests for pure logic
 
@@ -95,14 +95,15 @@ are identical for every path in the tree.
   `layout.repo_dir(id)`, has no `..` components, and `trash_stem` contains
   no `/`. Also: parse is idempotent and round-trips through `Display`.
 - `ExcludeSet::from_lists`: the invariants in `ARCHITECTURE.md` 3.5, checked
-  over random path sets: ancestors of `Included` or `Mixed` are `Mixed`;
-  descendants of `Excluded` are never visited (`classify` of a descendant of
-  an excluded path that is not itself included returns `Excluded`); an
-  included path under an excluded ancestor makes that ancestor `Mixed`.
+  over random path sets: every ancestor of an included path is `Recurse`,
+  so the walk can reach it; a descendant of an excluded path that is not
+  itself included is `Skip`, so the walk never visits it; an included path
+  is `CloneWhole` however deep inside an excluded tree it sits.
 - `Walker` against the `fake` cloner on a random tree with a random
   `ExcludeSet`: the destination equals the source minus excluded paths plus
-  included ones, and `tree_clones + dirs_recursed` never exceeds the number
-  of `Mixed` nodes plus one. This runs on any filesystem and is the fast
+  included ones, and `dirs_recursed` never exceeds the number of `Recurse`
+  nodes plus one, which is what fails if the walk stops collapsing whole
+  directories and quietly becomes a file-by-file copy. This runs on any filesystem and is the fast
   test for the walk logic; 2.3 is the slow one that also covers git.
 - Derivations (`DESIGN.md` 2.2), one test each, since these replace stored
   state: the creation time read from the worktree directory's birth time is
