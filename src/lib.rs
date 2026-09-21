@@ -1,7 +1,9 @@
 pub mod cli;
+pub mod clone;
 pub mod commands;
 pub mod config;
 pub mod create;
+pub mod exclude;
 pub mod docs;
 pub mod error;
 pub mod git;
@@ -94,6 +96,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             let options = create::Options {
                 branch: args.branch.clone(),
                 no_init: args.no_init,
+                clone_mode: args.clone_mode,
             };
             create::run(
                 &git,

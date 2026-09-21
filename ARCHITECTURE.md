@@ -207,29 +207,35 @@ instead, or raise it as a design change.
 ### 3.5 Exclusion
 
 ```rust
-pub enum Class { Clean, Excluded, Included, Mixed }
+/// Named for what the walk does, not for what the path is: a path kept
+/// because `.worktreeinclude` asked for it and one kept because nothing
+/// objected are the same instruction, and the walk is the only caller.
+pub enum Class { Skip, CloneWhole, Recurse }
 
-/// Result of the three `git ls-files -o` queries in the source.
+/// Result of the four queries of DESIGN.md 6.3 in the source.
 pub struct ExcludeSet { trie: PathTrie }
 impl ExcludeSet {
-    pub fn compute(git: &Git, source: &Path, include_file: &Path) -> Result<ExcludeSet>;
+    pub fn compute(git: &Git, source: &Path) -> Result<ExcludeSet>;
     pub fn from_lists(excluded: Vec<PathBuf>, included: Vec<PathBuf>) -> ExcludeSet;   // pure; tested with proptest
-    /// Clean: no excluded/mixed descendant, clone whole. Excluded: skip.
-    /// Included: clone whole even though it is untracked. Mixed: recurse.
     pub fn classify(&self, rel: &Path) -> Class;
 }
 ```
 
-Invariants of `from_lists`: an included path wins over an excluded
-ancestor (the ancestor becomes `Mixed`); every ancestor of a `Mixed` or
-`Included` path is `Mixed`; a path with no relation to any listed path is
-`Clean`; the root is `Mixed` if anything is excluded, `Clean` otherwise.
+Invariants of `from_lists`: an included path is `CloneWhole` even under an
+excluded ancestor, and every ancestor between them is `Recurse`; a path
+whose nearest named ancestor is excluded, with no include below it, is
+`Skip` although nothing named it; a path unrelated to every named path is
+`CloneWhole`.
+
+`Walker` ignores the root's class and always recurses there: git has
+already made the destination directory and written a `.git` file into it,
+so there is nothing for `clone_tree` to create and one entry to skip.
 
 ### 3.6 Cloning
 
 ```rust
 pub enum Method { Cow, Checkout }
-pub struct MethodDecision { pub method: Method, pub reason: String }   // reason is shown in warnings and doctor
+pub struct MethodDecision { pub method: Method, pub reason: String }   // reason is shown by `new` at progress level and by doctor
 
 pub trait Cloner {
     /// Copy-on-write clone of a whole tree. `dst` must not exist; its parent must.
@@ -239,22 +245,25 @@ pub trait Cloner {
     fn name(&self) -> &'static str;   // "clonefile", "reflink", "fake"
 }
 pub fn platform_cloner() -> Box<dyn Cloner>;
-pub fn probe(cloner: &dyn Cloner, source: &Path, dest_parent: &Path) -> Result<ProbeResult>;
-pub fn decide(mode: CloneMode, source: &Path, dest_parent: &Path, cloner: &dyn Cloner) -> Result<MethodDecision>;
+/// Clones a temporary file within `dir` and removes both. `Ok(())` means
+/// this filesystem clones; the error says why it does not.
+pub fn probe(cloner: &dyn Cloner, dir: &Path) -> Result<()>;
+pub fn decide(mode: CloneMode, source: &Path, dest_parent: &Path, cloner: &dyn Cloner) -> MethodDecision;
 
 pub struct Walker<'a> { cloner: &'a dyn Cloner, set: &'a ExcludeSet, stats: WalkStats }
 impl Walker<'_> {
     /// Clones `src` into the existing, empty-but-for-.git `dst`.
     pub fn run(&mut self, src: &Path, dst: &Path) -> Result<WalkStats>;
 }
-pub struct WalkStats { pub tree_clones: u64, pub file_clones: u64, pub dirs_recursed: u64, pub skipped: u64 }
+pub struct WalkStats { pub tree_clones: u64, pub dirs_recursed: u64 }
 ```
 
 `apfs.rs` implements `clone_tree` as one `clonefile` with `CLONE_NOFOLLOW`
 and `clone_file` the same way. `reflink.rs` implements `clone_tree` as a
 recursive walk calling `clone_file` (open, `FICLONE`, `fchmod`,
 `futimens`) and creating directories and symlinks. `fake.rs` copies with
-`std::fs` and records every call, for tests on any filesystem.
+`std::fs`, so the walk can be tested on a filesystem that cannot clone.
+`WalkStats` already counts what a test would want from a recorder.
 
 ### 3.7 Index
 
@@ -281,8 +290,8 @@ pub fn install(index: &Index, gitdir: &Path) -> Result<()>;            // temp f
 ```rust
 /// What was asked for, with configuration folded in. Nothing downstream of
 /// `derive` reads a setting.
-pub struct Request { pub dest: PathBuf, pub branch: String,
-                     pub base_spec: String, pub workers: usize, pub fetch: bool }
+pub struct Request { pub dest: PathBuf, pub branch: String, pub base_spec: String,
+                     pub workers: usize, pub fetch: bool, pub clone_mode: CloneMode }
 
 /// What git and the filesystem say about a `Request`. Asked in one place.
 pub struct Observed { pub source_head: Option<Oid>, pub base: Option<Oid>,
@@ -298,7 +307,7 @@ pub struct Plan { pub source_head: Oid, pub branch: BranchAction }
 pub enum BranchAction { Create { base: Oid }, Reuse }
 
 /// Per-invocation decisions that are not configuration (DESIGN.md 3).
-pub struct Options { pub branch: Option<String>, pub no_init: bool }
+pub struct Options { pub branch: Option<String>, pub no_init: bool, pub clone_mode: CloneMode }
 
 pub fn derive(ws: &Workspace, config: &Config, name: WorktreeName,
               options: &Options) -> Result<Request>;                          // pure
@@ -403,7 +412,8 @@ run -> Git::new -> Repo::discover -> config::load -> Workspace::new
      act      (io)    git worktree add --no-checkout --detach
                       -> clone::decide -> if Cow: ExcludeSet::compute -> Walker::run
                                           -> index::{parse, rewrite_stat, install}
-                                          -> empty submodules -> git reset --hard
+                                          -> empty submodules
+                                          -> git update-index --refresh; git reset --hard
                          else:            git checkout --detach with workers
                       -> git checkout -b
                       -> hook::resolve -> hook::run
@@ -422,7 +432,9 @@ and between `observe` and `act` another process may invalidate any of them.
 - Match `.gitignore` patterns in Rust. Ask git.
 - Use `std::fs::rename` fallbacks that copy. On `EXDEV` do the synchronous
   delete.
-- Use `/tmp` in tests on macOS. It is a different volume from `$HOME`.
+- Write test fixtures outside `target/tmp`. It is not about volumes on
+  macOS, where `/private/tmp` clones from `$HOME` fine; it is that
+  `cargo clean` should take the fixtures with it.
 - Read config from git config, or add a setting for something a caller
   decides per invocation. A setting also needs a scope: if a repository
   should not be able to impose it, it does not belong in the project layer.

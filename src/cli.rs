@@ -72,8 +72,8 @@ pub struct NewArgs {
     pub fetch: bool,
 
     /// How to populate the worktree
-    #[arg(long, value_name = "MODE", value_enum)]
-    pub clone_mode: Option<CloneModeArg>,
+    #[arg(long, value_name = "MODE", value_enum, default_value = "auto")]
+    pub clone_mode: CloneMode,
 
     /// Branch name, when it differs from the worktree name
     #[arg(long, value_name = "NAME")]
@@ -173,9 +173,10 @@ pub enum Shell {
     Fish,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum CloneModeArg {
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum CloneMode {
     /// Copy-on-write when the filesystem supports it, checkout otherwise
+    #[default]
     Auto,
     /// Copy-on-write, failing when it is unavailable
     Cow,

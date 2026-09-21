@@ -5,7 +5,10 @@ use std::time::SystemTime;
 
 use serde_json::json;
 
+use crate::cli::CloneMode;
+use crate::clone;
 use crate::config::Config;
+use crate::exclude;
 use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::hook::{self, HookEnv};
@@ -253,6 +256,22 @@ fn prune_empty_dirs(root: &Path) {
     }
 }
 
+/// The include file is read from the main worktree, so a copy in a linked
+/// worktree has no effect. Naming the path in effect is how someone finds
+/// that out.
+fn describe_include(include: Option<(std::path::PathBuf, usize)>) -> String {
+    match include {
+        None => "none; the repository is bare".to_string(),
+        Some((file, _)) if !file.exists() => format!("none; no {}", file.display()),
+        Some((file, matches)) => format!("{} matches {matches} paths", file.display()),
+    }
+}
+
+/// The deepest ancestor of `path` that exists, `path` itself included.
+fn nearest_existing(path: &Path) -> Option<std::path::PathBuf> {
+    path.ancestors().find(|p| p.exists()).map(Path::to_path_buf)
+}
+
 pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {
     let entries = config.entries();
     if json {
@@ -273,6 +292,10 @@ pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {
     Ok(0)
 }
 
+/// Reports what `wtm new` would do here and why. Every line either changes
+/// the outcome or explains one that did. A machine that cannot clone is a
+/// supported machine, so the exit code stays 0; only a question we could
+/// not ask is a failure.
 pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i32> {
     let repo = &workspace.repo;
     let root = workspace.root();
@@ -283,6 +306,22 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
         _ => None,
     };
 
+    let source = (!repo.bare).then_some(repo.main.as_path());
+    // The repository's directory under the data root does not exist until
+    // the first worktree is made, and probing must not create it: an empty
+    // one reads as orphaned. Its nearest existing ancestor is on the same
+    // filesystem, which is all the probe needs.
+    let probe_dir = nearest_existing(&workspace.repo_dir()).unwrap_or_else(|| root.to_path_buf());
+    let cloner = clone::platform_cloner();
+    let decision = clone::decide(git, CloneMode::Auto, source, &probe_dir, cloner.as_ref())?;
+    let sparse = source.is_some_and(|source| clone::is_sparse(git, source));
+    let submodules = source.map_or(0, |source| git.gitlinks(source).map_or(0, |list| list.len()));
+    let include = source.map(|source| {
+        let file = exclude::include_file(source);
+        let matches = exclude::included_paths(git, source).map_or(0, |paths| paths.len());
+        (file, matches)
+    });
+
     if json {
         ui.emit(
             serde_json::to_string_pretty(&json!({
@@ -292,6 +331,12 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
                           "bare": repo.bare },
                 "data_root": { "path": root, "device": root_device },
                 "same_filesystem": same_filesystem,
+                "method": { "method": decision.method.as_str(), "reason": decision.reason },
+                "sparse": sparse,
+                "submodules": submodules,
+                "include": include.as_ref().map(|(file, matches)| json!({
+                    "file": file, "exists": file.exists(), "matches": matches,
+                })),
             }))
             .unwrap_or_default(),
         );
@@ -316,6 +361,10 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
                 repo.main.display().to_string()
             },
         ],
+        vec!["sparse".into(), if sparse { "yes" } else { "no" }.into()],
+        vec!["submodules".into(), submodules.to_string()],
+        vec!["include".into(), describe_include(include)],
+        vec!["method".into(), decision.reason],
     ];
     for line in align(&rows) {
         ui.emit(line);

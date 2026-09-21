@@ -68,15 +68,16 @@ another filesystem falls back to a synchronous delete.
 The clone primitives for both platforms with a test double, the probe and
 the method decision, the exclusion set and `.worktreeinclude`, the walk,
 and the wiring into creation. Correct but not yet fast: the index comes
-from `read-tree`, so the first status still costs seconds.
+from `read-tree` with no stat data, so git hashes every file once before
+the tree is clean, and that second or more is spent inside `wtm new`.
 
 Done when: the resulting tree equals what `git worktree add` produces plus
 exactly the files the include patterns match; ignored files are absent
 unless included; a top-level symlink to a directory survives as a symlink;
 submodule directories exist and are empty; status is clean and switching
 branches works; the exclusion invariants hold under property testing; the
-probe reports unsupported across volumes; on a filesystem without cloning
-the checkout path still passes every behavioural test.
+on a filesystem without cloning the checkout path still passes every
+behavioural test.
 
 ## 5. Creation is fast
 
@@ -87,8 +88,9 @@ automatic mode becomes the default.
 Done when: the parser matches `git ls-files --debug` on generated
 repositories of every index version; the write-then-parse property holds;
 the lie test shows git trusting our stat data rather than re-reading files;
-every planted mutation is still detected; the first status on a
-hundred-thousand-file repository is under a second.
+every planted mutation is still detected; creation on a
+hundred-thousand-file repository no longer hashes the tree, and the first
+status is under a second.
 
 This is the riskiest code in the project. Feature 4 stays in place as its
 oracle: the two must produce identical trees, one of them without any index

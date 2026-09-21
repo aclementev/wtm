@@ -41,7 +41,14 @@ fn the_hook_sees_every_variable_and_runs_inside_the_new_worktree() {
     assert_eq!(value("WTM_HOOK_BASE_SHA"), head);
     assert_eq!(value("WTM_HOOK_MAIN"), repo.main.display().to_string());
     assert_eq!(value("WTM_HOOK_REPO_ID"), repo.repo_id());
-    assert_eq!(value("WTM_HOOK_METHOD"), "checkout");
+    // Which one it is depends on the filesystem the tests run on, so this
+    // asserts only that a real method was named. The spelling is pinned in
+    // the clone tests, which first establish that cloning works here.
+    let method = value("WTM_HOOK_METHOD");
+    assert!(
+        matches!(method.as_str(), "cow" | "checkout"),
+        "WTM_HOOK_METHOD was {method:?}"
+    );
     assert_eq!(seen.len(), 8, "no variable beyond the contract: {seen:?}");
 
     let cwd = std::fs::read_to_string(worktree.join("hook-pwd.txt")).unwrap();

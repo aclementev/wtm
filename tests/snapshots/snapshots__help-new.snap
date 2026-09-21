@@ -39,6 +39,8 @@ Options:
           - auto:     Copy-on-write when the filesystem supports it, checkout otherwise
           - cow:      Copy-on-write, failing when it is unavailable
           - checkout: Always let git write the files
+          
+          [default: auto]
 
       --branch <NAME>
           Branch name, when it differs from the worktree name

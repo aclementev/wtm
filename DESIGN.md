@@ -280,10 +280,15 @@ root, rather than the current one, needs the same resolution from a
 
 Reports, for the current repo: git version; main worktree path and volume;
 data dir path and volume; whether they share a filesystem (`st_dev`);
-whether a probe clone succeeds between them; index version and whether
-split index is in use; sparse checkout, submodules, LFS presence; fsmonitor
-and untracked-cache settings; which creation method `wtm new` would use and
-why. Exit 1 if `clone.mode = "cow"` would fail.
+whether a probe clone succeeds between them; whether the source is a sparse
+checkout; its index version and whether split index is in use; how many
+submodules it has; the `.worktreeinclude` in effect and how many paths it
+matches; and which creation method `wtm new` would use and why.
+
+Every line either changes what `wtm new` does or is needed to explain why
+it did. A machine where cloning is unavailable is a supported machine, not
+a broken one, so `doctor` exits 0 there as everywhere; it exits non-zero
+only when it could not look.
 
 ### 4.8 `wtm config [--json]`
 
@@ -329,7 +334,7 @@ In order, each failing with a specific message:
    it is renamed under the trash with a suffix nothing asks for, so the name
    is free the moment `wtm rm` returns.
 6. The branch rules of 4.1.
-7. Method selection (section 6.2) when `clone.mode` is `auto` or `cow`.
+7. Method selection (section 6.2) when `--clone-mode` is `auto` or `cow`.
 
 ## 6. Creating a worktree
 
@@ -346,7 +351,8 @@ if method == cow:
     clone walk source -> dest              (6.4)
     install index                          (6.5)
     empty submodule directories            (6.6)
-    git -C dest reset -q --hard            (drops cloned uncommitted changes)
+    git -C dest update-index --refresh -q  (exit status ignored)
+    git -C dest reset -q --hard            (rewrites only what still differs)
 else:
     git -C dest -c checkout.workers=<n> -c checkout.thresholdForParallelism=100 checkout -q --detach <source HEAD>
 git -C dest checkout -q -b <branch> <base>      (or `checkout <branch>` if it exists)
@@ -359,6 +365,15 @@ non-empty destination even with `--no-checkout`. Detaching at the source's
 HEAD commit and switching to the base afterwards means git rewrites only the
 files that differ between source and base.
 
+The refresh is what keeps the clone. Checkout decides whether to write a
+file from the index's cached stat data and never by hashing content first,
+so a `reset --hard` over an index whose stat data is zeroed rewrites every
+file from the object store and the clone is wasted. `update-index
+--refresh` spends the hashing once, finds the content already correct, and
+writes the true stat back; the reset that follows then touches only files
+that genuinely differ. It exits non-zero when a file needs updating, which
+is the ordinary case here and not a failure.
+
 If any step before the init hook fails, the destination directory and the
 git metadata are removed (`git worktree remove --force` after
 `git worktree unlock` if needed) and the branch is deleted if `wtm` created
@@ -366,21 +381,30 @@ it. The failure message names the step.
 
 ### 6.2 Method selection
 
-`auto` (default) chooses CoW when all of these hold, else checkout with a
-warning explaining which one failed and the override that would fix it:
+`auto` (default) chooses CoW when all of these hold, else checkout:
 
 - the source has a working tree: a bare repository has no files to clone,
   and this is a property of the repository rather than a failure, so `cow`
   reports it as unsupported rather than as an error to work around;
 - source and destination parent have the same `st_dev`;
-- a probe succeeds: clone one small regular file from the source (the first
-  regular file found in the source's top level, falling back to any tracked
-  file) to `<dest parent>/.wtm-probe-<uuid>`, then unlink it. On macOS this
-  is `clonefile` with `CLONE_NOFOLLOW`; on Linux `FICLONE` on a freshly
-  created file. Errors mean unsupported: `EXDEV`, `ENOTSUP`/`EOPNOTSUPP`,
-  `ENOTTY`, `EINVAL`.
+- a probe succeeds: write a few bytes to `<dest parent>/.wtm-probe-<pid>-<nanos>`,
+  clone it to a second name beside it, unlink both. The `st_dev` check above
+  has already established that source and destination share a filesystem, so
+  a clone within the destination's directory answers the same question
+  without searching the source for a file to copy or touching anything the
+  user owns. On macOS the clone is `clonefile` with `CLONE_NOFOLLOW`; on
+  Linux `FICLONE` on a freshly created file. Errors mean unsupported:
+  `EXDEV`, `ENOTSUP`/`EOPNOTSUPP`, `ENOTTY`, `EINVAL`.
 
-`cow` fails instead of warning. `checkout` skips the checks.
+Falling back is ordinary operation, not a problem: on a filesystem without
+cloning there is nothing the caller could do differently, and a warning on
+every `wtm new` for the life of the machine would be noise. `auto` reports
+its choice and the reason at progress level, which `--quiet` silences, and
+`wtm doctor` is where the reason is explained at length. A warning is
+reserved for a condition that is surprising and fixable: a sparse source
+worktree (section 5), or a probe that fails where it should have worked.
+
+`cow` fails instead of falling back. `checkout` skips the checks.
 
 ### 6.3 Exclude set
 
@@ -397,20 +421,38 @@ Run in the source, all `-z`:
 git ls-files -o -i --exclude-standard --directory      -> ignored, collapsed to top-most fully-ignored dirs
 git ls-files -o    --exclude-standard --directory      -> untracked, collapsed
 git ls-files -o -i --exclude-from=<include file>       -> include set, individual files
+git diff-index --name-only HEAD                        -> tracked files dirty in the source
 ```
 
-The include file is read from the source; if it is itself untracked, it is
-added to the include set so a worktree cloned from this one keeps it.
-The third command only sees untracked files, which is correct: tracked
-files are always carried.
+The include file is read from the source, which is always the main
+worktree, so a copy sitting in a linked worktree has no effect; `wtm
+doctor` names the one in effect. It is not carried into the new worktree
+unless it names itself, because carrying an untracked file that nothing is
+ignoring leaves a `??` entry in `git status`, and `wtm rm` refuses a
+worktree whose status is not empty (section 4.3). Tracking it, which is
+the ordinary case, or ignoring it both avoid that. The third command only
+sees untracked files, which is correct: tracked files are always carried.
 
-Build two path tries: `excluded` = ignored ∪ untracked, `included` from
-the third list. Then, for each included path, remove it and mark every
-ancestor as "mixed". The walk below consults both. The three commands cost
-about 0.6 s at 100k files and are not accelerated by the untracked cache;
-an implementation may replace them with one `git status --porcelain=v2 -z
---ignored=matching --untracked-files=all` call, which is, but must produce
-the same sets. Verify equivalence with a test.
+Build one path trie: `excluded` = ignored ∪ untracked ∪ dirty, `included`
+from the third list. Then, for each included path, remove it and mark every
+ancestor as "mixed". The walk below consults both. The four commands cost
+about 0.6 s at 100k files.
+
+The fourth query is about correctness, not speed. A tracked file modified
+in the source carries the source's uncommitted content, while the index
+entry that describes it still names HEAD's object. Cloning it and then
+writing stat data taken from the clone would produce an entry git believes
+is clean and whose content is not what it says (section 6.5). Leaving those
+files out of the walk means the destination has no file there, the entry
+gets zeroed stat data, and the `reset --hard` of 6.1 writes the committed
+content from the object store. It also saves cloning bytes that would be
+overwritten.
+
+`--directory` is what collapses `node_modules` into a single trie node, and
+that collapsing is what makes the walk cheap. A single `git status
+--porcelain=v2 --ignored` call returns the same facts in one pass, but
+getting the collapsed forms back out of it is the hard part, so `wtm` has
+one implementation and it is this one.
 
 ### 6.4 Clone walk
 
@@ -421,15 +463,22 @@ destination already has its own.
 
 ```
 walk(rel):
-    if rel is excluded:               return           (skip entirely)
-    if rel has no excluded or mixed descendant:
+    if rel == "":                     recurse           (dst/"" already exists)
+    if rel is excluded:               return            (skip entirely)
+    if nothing below rel is excluded or kept-inside-an-exclusion:
         clone_tree(src/rel, dst/rel)                    (one call on APFS)
         return
-    mkdir dst/rel with src/rel's mode; copy its mtime last
+    mkdir dst/rel with src/rel's mode
     for child in readdir(src/rel):
         if rel == "" and child == ".git": continue
         walk(rel/child)
 ```
+
+The root is always recursed whatever its classification, because git has
+already created the destination directory and put a `.git` file in it:
+`clone_tree` needs a destination that does not exist, and `.git` has to be
+skipped. Directory mtimes are not copied. The only thing that would read
+them is the untracked cache, whose `UNTR` extension section 6.5 drops.
 
 `clone_tree` on macOS is one `clonefile(src, dst, CLONE_NOFOLLOW)`. The
 destination must not exist and its parent must. Symlinks inside the tree
@@ -444,9 +493,7 @@ caught it. Sockets and fifos in the source are skipped on both platforms.
 
 Cost model to keep in mind: on APFS the number of `clonefile` calls is what
 matters, and a cache directory scattered through many packages forces every
-ancestor open. An optional optimization, off by default until measured:
-when a directory's excluded descendants number fewer than N small entries,
-clone it whole and unlink the exclusions afterwards.
+ancestor open.
 
 ### 6.5 Installing the index
 
@@ -469,10 +516,10 @@ re-hash every file. `wtm` writes the destination index itself:
    flags from the source: `core.fileMode` may be false and mode must not be
    taken from the filesystem. Entries with the skip-worktree or
    intent-to-add flag, and gitlinks (mode `160000`), keep their stat data
-   untouched. An entry whose file is missing in the destination (it was
-   excluded because untracked-but-listed, which cannot happen for tracked
-   files, or a walk bug) is written with zeroed stat data so git re-checks
-   it, and a warning is logged.
+   untouched. An entry whose file is missing in the destination is written
+   with zeroed stat data so git re-checks it. Files dirty in the source are
+   deliberately absent (section 6.3), so this is the ordinary case rather
+   than an error, and the `reset --hard` of 6.1 writes them out.
 4. Racy-git rule: any entry whose mtime in whole seconds is greater than or
    equal to the time the index will be written gets `size` set to 0
    ("smudged"), which forces git to verify its content. Cloned files keep
@@ -501,9 +548,8 @@ job (`git submodule update --init`).
 
 ### 6.7 Checkout fallback
 
-`git checkout --detach <source HEAD>` with `checkout.workers` set to
-`clone.workers` (0 means core count) and `checkout.thresholdForParallelism`
-100. Then the same branch step and hook as the CoW path.
+`git checkout --detach <source HEAD>` with `checkout.workers` set to the
+core count (section 3) and `checkout.thresholdForParallelism` 100. Then the same branch step and hook as the CoW path.
 
 ## 7. Init hook
 
@@ -728,7 +774,10 @@ macOS: `clonefile(const char*, const char*, int)` in `<sys/clonefile.h>`;
 flags `CLONE_NOFOLLOW` 0x0001, `CLONE_NOOWNERCOPY` 0x0002, `CLONE_ACL`
 0x0004. Cloning across APFS volumes fails with `EXDEV`. Cloned files keep
 mtime, xattrs, flags and permissions; ACLs only with `CLONE_ACL` (not
-needed). `/tmp` is a different volume from `/Users`; tests must not use it.
+needed). Measured on macOS 26: `/private/tmp`, `$TMPDIR` and `/Users` are
+all on the same data volume, so none of them is a way to provoke `EXDEV`.
+The volume that is separate is the sealed system volume at `/`, which is
+read-only and holds nothing a test could write.
 
 Linux: `ioctl(dst_fd, FICLONE, src_fd)` from `<linux/fs.h>`. Same
 filesystem and mount required. Data only; the caller copies mode and
@@ -756,7 +805,9 @@ The strategy is in `TESTING.md`; this section keeps the acceptance criteria.
   `git worktree list` shows the worktree; `git status --porcelain` is empty;
   the tree equals `git worktree add`'s tree plus the included files
   (compare sorted `find` output); excluded paths are absent; the dirty
-  change did not carry; `git checkout <other-branch>` works; planted
+  change did not carry; on the CoW path an untouched tracked file still has
+  the source's mtime, which is what tells a clone apart from a checkout
+  that reached the same contents; `git checkout <other-branch>` works; planted
   mutations after creation are detected; `wtm rm` returns in under 100 ms
   and the path is gone; the trash entry disappears after `wtm gc --wait`;
   two concurrent `wtm gc --wait` runs on a populated trash both exit 0.
