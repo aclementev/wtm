@@ -245,15 +245,22 @@ pub trait Cloner {
     fn name(&self) -> &'static str;   // "clonefile", "reflink", "fake"
 }
 pub fn platform_cloner() -> Box<dyn Cloner>;
-/// Clones a temporary file within `dir` and removes both. `Ok(())` means
-/// this filesystem clones; the error says why it does not.
-pub fn probe(cloner: &dyn Cloner, dir: &Path) -> Result<()>;
-pub fn decide(mode: CloneMode, source: &Path, dest_parent: &Path, cloner: &dyn Cloner) -> MethodDecision;
+/// `None` for a bare repository, which has no files to clone. Errors under
+/// `CloneMode::Cow`; falls back under `Auto`. The probe it runs is private.
+pub fn decide(git: &Git, mode: CloneMode, source: Option<&Path>, dest_parent: &Path,
+              cloner: &dyn Cloner) -> Result<MethodDecision>;
+pub fn is_sparse(git: &Git, source: &Path) -> bool;
+pub fn nearest_existing(path: &Path) -> Option<&Path>;
+/// Of the nearest existing ancestor, so a data root nobody has created yet
+/// still reports the volume it will be made in.
+pub fn device_of(path: &Path) -> Option<u64>;
 
-pub struct Walker<'a> { cloner: &'a dyn Cloner, set: &'a ExcludeSet, stats: WalkStats }
+/// Everything the recursion holds still, so the recursive step takes only
+/// the path that changes. `dst_root` exists and holds nothing but `.git`.
+pub struct Walker<'a> { cloner: &'a dyn Cloner, set: &'a ExcludeSet, ui: &'a Ui,
+                        src_root: &'a Path, dst_root: &'a Path, stats: WalkStats }
 impl Walker<'_> {
-    /// Clones `src` into the existing, empty-but-for-.git `dst`.
-    pub fn run(&mut self, src: &Path, dst: &Path) -> Result<WalkStats>;
+    pub fn run(&mut self) -> Result<WalkStats>;
 }
 pub struct WalkStats { pub tree_clones: u64, pub dirs_recursed: u64 }
 ```

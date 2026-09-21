@@ -297,7 +297,7 @@ fn act(
     )?);
 
     match method {
-        Method::Cow => populate_by_clone(git, ui, ws, request, cloner)?,
+        Method::Cow => populate_by_clone(git, ui, &ws.repo.main, &request.dest, cloner)?,
         Method::Checkout => {
             ui.progress("checking out");
             let workers = format!("checkout.workers={}", request.workers);
@@ -342,22 +342,20 @@ fn act(
 fn populate_by_clone(
     git: &Git,
     ui: &Ui,
-    ws: &Workspace,
-    request: &Request,
+    source: &Path,
+    dest: &Path,
     cloner: &dyn Cloner,
 ) -> Result<()> {
-    let source = &ws.repo.main;
-
     ui.progress("cloning");
     let set = ExcludeSet::compute(git, source)?;
-    let stats = Walker::new(cloner, &set, ui).run(source, &request.dest)?;
+    let stats = Walker::new(cloner, &set, ui, source, dest).run()?;
     ui.progress(format!(
         "cloned {} subtrees, recursed into {} directories",
         stats.tree_clones, stats.dirs_recursed
     ));
 
-    ui.relay(&git.run(&request.dest, &["read-tree", "HEAD"])?);
-    empty_submodules(git, &request.dest)?;
+    ui.relay(&git.run(dest, &["read-tree", "HEAD"])?);
+    empty_submodules(git, dest)?;
 
     // `read-tree` leaves every entry's stat data zeroed, and checkout reads
     // cached stat rather than hashing, so a `reset --hard` on top of it
@@ -365,8 +363,8 @@ fn populate_by_clone(
     // The refresh pays for one hash of the tree, finds the content already
     // correct and writes the true stat back. It exits non-zero when a file
     // needs updating, which is what we asked it to find out.
-    let _ = git.run(&request.dest, &["update-index", "--refresh", "-q"]);
-    ui.relay(&git.run(&request.dest, &["reset", "-q", "--hard"])?);
+    let _ = git.run(dest, &["update-index", "--refresh", "-q"]);
+    ui.relay(&git.run(dest, &["reset", "-q", "--hard"])?);
     Ok(())
 }
 

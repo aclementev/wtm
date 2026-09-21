@@ -4,9 +4,9 @@ use std::path::Path;
 use super::Cloner;
 use crate::error::{Error, Result};
 
-/// Copies with `std::fs` instead of cloning, so the walk can be tested on a
-/// filesystem that has no copy-on-write. Not reachable from the command
-/// line: `platform_cloner` never returns it.
+/// Copies with `std::fs` instead of cloning, so the walk can run on a
+/// filesystem that has no copy-on-write. Nothing reaches it from the
+/// command line, because `platform_cloner` never returns it.
 pub struct Copier;
 
 impl Cloner for Copier {

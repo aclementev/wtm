@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +16,9 @@ pub mod fake;
 mod reflink;
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("wtm clones with clonefile(2) on macOS and FICLONE on Linux; no other platform is supported");
+compile_error!(
+    "wtm clones with clonefile(2) on macOS and FICLONE on Linux; no other platform is supported"
+);
 
 /// How a worktree's files get there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,9 +41,9 @@ impl Method {
 pub struct MethodDecision {
     pub method: Method,
     pub reason: String,
-    /// Which channel the reason belongs on. Falling back because the
-    /// filesystem cannot clone is ordinary and goes to progress; a
-    /// condition the caller could fix, like a sparse source, is a warning.
+    /// Which channel the reason belongs on. A filesystem that cannot clone
+    /// is ordinary and goes to progress. A condition the caller could fix,
+    /// such as a sparse source, is a warning.
     pub surprising: bool,
 }
 
@@ -48,8 +51,8 @@ pub trait Cloner {
     /// Copy-on-write clone of a whole tree. `dst` must not exist; its
     /// parent must.
     fn clone_tree(&self, src: &Path, dst: &Path) -> Result<()>;
-    /// Clone one regular file. Used inside mixed directories and by the
-    /// probe.
+    /// Clone one regular file. The probe uses it, and `reflink` builds
+    /// `clone_tree` out of it.
     fn clone_file(&self, src: &Path, dst: &Path) -> Result<()>;
     fn name(&self) -> &'static str;
 }
@@ -62,13 +65,13 @@ pub fn platform_cloner() -> Box<dyn Cloner> {
 }
 
 /// Clones a temporary file within `dir` and removes both. `Ok(())` means
-/// this filesystem clones; the error says why it does not.
+/// this filesystem clones, and the error says why it does not.
 ///
 /// `decide` has already established that the source and `dir` share a
 /// filesystem, so cloning inside `dir` answers the same question without
-/// searching the source for a file to copy or touching anything the user
+/// searching the source for a file to copy or touching anything the caller
 /// owns.
-pub fn probe(cloner: &dyn Cloner, dir: &Path) -> Result<()> {
+fn probe(cloner: &dyn Cloner, dir: &Path) -> Result<()> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
@@ -84,10 +87,10 @@ pub fn probe(cloner: &dyn Cloner, dir: &Path) -> Result<()> {
 
 /// Which way `wtm new` will populate the worktree, and why.
 ///
-/// `source` is `None` for a bare repository: there are no files to clone,
-/// which is a property of the repository rather than something to work
-/// around. Fails instead of falling back under `--clone-mode cow`, and is
-/// called before anything is created so that failure costs nothing.
+/// `source` is `None` for a bare repository, which has no files to clone.
+/// That is a property of the repository rather than something to work
+/// around. Under `--clone-mode cow` this fails instead of falling back, and
+/// the caller asks before creating anything so that failing costs nothing.
 pub fn decide(
     git: &Git,
     mode: CloneMode,
@@ -125,7 +128,7 @@ struct Unsupported {
     surprising: bool,
 }
 
-/// The conditions of `DESIGN.md` 6.2, in order, cheapest question first.
+/// Everything that rules out cloning, cheapest question first.
 fn unsupported(
     git: &Git,
     source: Option<&Path>,
@@ -160,11 +163,15 @@ fn unsupported(
                 dest_parent.display()
             ));
         }
-        (None, _) | (_, None) => return ordinary("could not stat the source or the data root".to_string()),
+        (None, _) | (_, None) => {
+            return ordinary("could not stat the source or the data root".to_string());
+        }
         _ => {}
     }
     if let Err(error) = probe(cloner, dest_parent) {
-        return ordinary(format!("this filesystem does not support cloning ({error})"));
+        return ordinary(format!(
+            "this filesystem does not support cloning ({error})"
+        ));
     }
     None
 }
@@ -175,12 +182,22 @@ pub fn is_sparse(git: &Git, source: &Path) -> bool {
     let enabled = git
         .stdout(source, &["config", "--get", "core.sparseCheckout"])
         .is_ok_and(|value| value == "true");
-    enabled || git.gitdir_of(source).is_some_and(|dir| dir.join("info/sparse-checkout").exists())
+    enabled
+        || git
+            .gitdir_of(source)
+            .is_some_and(|dir| dir.join("info/sparse-checkout").exists())
 }
 
-fn device_of(path: &Path) -> Option<u64> {
+/// The deepest ancestor of `path` that exists, `path` itself included.
+pub fn nearest_existing(path: &Path) -> Option<&Path> {
+    path.ancestors().find(|ancestor| ancestor.exists())
+}
+
+/// The device `path` is on, or would land on. A data root nobody has
+/// created yet still reports the volume it will be made in.
+pub fn device_of(path: &Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt;
-    fs::metadata(path).ok().map(|m| m.dev())
+    fs::metadata(nearest_existing(path)?).ok().map(|m| m.dev())
 }
 
 /// What the walk did. Its only reader is the test that fails when the walk
@@ -192,38 +209,50 @@ pub struct WalkStats {
     pub dirs_recursed: u64,
 }
 
+/// Everything the recursion holds still, so the recursive step takes only
+/// the path that changes.
 pub struct Walker<'a> {
     cloner: &'a dyn Cloner,
     set: &'a ExcludeSet,
     ui: &'a Ui,
+    src_root: &'a Path,
+    dst_root: &'a Path,
     stats: WalkStats,
 }
 
 impl<'a> Walker<'a> {
-    pub fn new(cloner: &'a dyn Cloner, set: &'a ExcludeSet, ui: &'a Ui) -> Walker<'a> {
+    /// `dst_root` exists and holds nothing but the `.git` file git wrote.
+    pub fn new(
+        cloner: &'a dyn Cloner,
+        set: &'a ExcludeSet,
+        ui: &'a Ui,
+        src_root: &'a Path,
+        dst_root: &'a Path,
+    ) -> Walker<'a> {
         Walker {
             cloner,
             set,
             ui,
+            src_root,
+            dst_root,
             stats: WalkStats::default(),
         }
     }
 
-    /// Clones `src` into `dst`, which exists and holds nothing but the
-    /// `.git` file git wrote.
-    pub fn run(&mut self, src: &Path, dst: &Path) -> Result<WalkStats> {
-        self.walk(src, dst, Path::new(""))?;
+    pub fn run(&mut self) -> Result<WalkStats> {
+        self.walk(Path::new(""))?;
         Ok(self.stats)
     }
 
-    fn walk(&mut self, src_root: &Path, dst_root: &Path, rel: &Path) -> Result<()> {
-        let src = src_root.join(rel);
-        let dst = dst_root.join(rel);
+    fn walk(&mut self, rel: &Path) -> Result<()> {
+        let src = self.src_root.join(rel);
+        let dst = self.dst_root.join(rel);
         let at_root = rel.as_os_str().is_empty();
 
-        // The root is recursed whatever its class: git has already made the
-        // destination and put a `.git` file in it, so there is nothing for
-        // `clone_tree` to create and one entry to skip.
+        // The walk always recurses at the root, whatever its class. Git
+        // has already made the destination and put a `.git` file in it, so
+        // there is nothing for `clone_tree` to create and one entry to
+        // skip.
         if !at_root {
             match self.set.classify(rel) {
                 Class::Skip => return Ok(()),
@@ -234,8 +263,11 @@ impl<'a> Walker<'a> {
                 }
                 Class::Recurse => {}
             }
-            let mode = fs::symlink_metadata(&src).map_err(|e| Error::io(&src, e))?;
-            create_dir(&dst, &mode)?;
+            let source = fs::symlink_metadata(&src).map_err(|e| Error::io(&src, e))?;
+            fs::DirBuilder::new()
+                .mode(source.permissions().mode())
+                .create(&dst)
+                .map_err(|e| Error::io(&dst, e))?;
         }
 
         self.stats.dirs_recursed += 1;
@@ -259,16 +291,8 @@ impl<'a> Walker<'a> {
                 ));
                 continue;
             }
-            self.walk(src_root, dst_root, &rel.join(name))?;
+            self.walk(&rel.join(name))?;
         }
         Ok(())
     }
-}
-
-fn create_dir(path: &Path, source: &fs::Metadata) -> Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-    fs::DirBuilder::new()
-        .mode(source.permissions().mode())
-        .create(path)
-        .map_err(|e| Error::io(path, e))
 }
