@@ -6,9 +6,9 @@ use std::path::Path;
 use super::Cloner;
 use crate::error::{Error, Result};
 
-/// `ioctl(dst, FICLONE, src)` from `<linux/fs.h>`. Data only: the caller
-/// copies mode and mtime, and the mtime has to match the source or the
-/// index we write will not validate.
+/// `ioctl(dst, FICLONE, src)` from `<linux/fs.h>`. It copies data and
+/// nothing else, so the caller copies mode and mtime. The mtime has to
+/// match the source or the index we write will not validate.
 const FICLONE: libc::c_ulong = 0x4004_9409;
 
 /// Per-file reflinks. Unlike `clonefile(2)` there is no whole-tree call, so

@@ -5,8 +5,9 @@ use std::path::Path;
 use super::Cloner;
 use crate::error::{Error, Result};
 
-/// A symlink argument is cloned as the symlink. Without this a top-level
-/// link to a directory becomes a copy of the directory it points at.
+/// With this flag `clonefile` copies a symlink argument as a symlink.
+/// Without it, a top-level link to a directory becomes a copy of the whole
+/// directory it points at.
 const CLONE_NOFOLLOW: u32 = 0x0001;
 
 /// `clonefile(2)`. One call copies a whole tree, sharing blocks with the

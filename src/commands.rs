@@ -1,4 +1,3 @@
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::str::FromStr;
 use std::time::SystemTime;
@@ -267,11 +266,6 @@ fn describe_include(include: Option<(std::path::PathBuf, usize)>) -> String {
     }
 }
 
-/// The deepest ancestor of `path` that exists, `path` itself included.
-fn nearest_existing(path: &Path) -> Option<std::path::PathBuf> {
-    path.ancestors().find(|p| p.exists()).map(Path::to_path_buf)
-}
-
 pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {
     let entries = config.entries();
     if json {
@@ -299,8 +293,8 @@ pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {
 pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i32> {
     let repo = &workspace.repo;
     let root = workspace.root();
-    let repo_device = device_of(&repo.main);
-    let root_device = device_of(root);
+    let repo_device = clone::device_of(&repo.main);
+    let root_device = clone::device_of(root);
     let same_filesystem = match (repo_device, root_device) {
         (Some(a), Some(b)) => Some(a == b),
         _ => None,
@@ -308,10 +302,11 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
 
     let source = (!repo.bare).then_some(repo.main.as_path());
     // The repository's directory under the data root does not exist until
-    // the first worktree is made, and probing must not create it: an empty
-    // one reads as orphaned. Its nearest existing ancestor is on the same
-    // filesystem, which is all the probe needs.
-    let probe_dir = nearest_existing(&workspace.repo_dir()).unwrap_or_else(|| root.to_path_buf());
+    // the first worktree is made, and probing must not create it, because
+    // an empty one reads as orphaned. Its nearest existing ancestor is on
+    // the same filesystem, which is all the probe needs.
+    let repo_dir = workspace.repo_dir();
+    let probe_dir = clone::nearest_existing(&repo_dir).unwrap_or(root);
     let cloner = clone::platform_cloner();
     let decision = clone::decide(git, CloneMode::Auto, source, &probe_dir, cloner.as_ref())?;
     let sparse = source.is_some_and(|source| clone::is_sparse(git, source));
@@ -382,15 +377,4 @@ fn describe_volumes(repo: Option<u64>, root: Option<u64>, same: Option<bool>) ->
     }
 }
 
-/// The device of the nearest existing ancestor, so a data root that has not
-/// been created yet still reports the volume it will land on.
-fn device_of(path: &Path) -> Option<u64> {
-    let mut candidate: Option<&Path> = Some(path);
-    while let Some(current) = candidate {
-        if let Ok(metadata) = std::fs::metadata(current) {
-            return Some(metadata.dev());
-        }
-        candidate = current.parent();
-    }
-    None
-}
+
