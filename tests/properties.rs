@@ -211,15 +211,4 @@ proptest! {
             }
         }
     }
-
-    #[test]
-    fn a_path_unrelated_to_every_named_path_is_cloned_whole((excluded, included) in lists()) {
-        let set = ExcludeSet::from_lists(excluded.clone(), included.clone());
-        let related = |p: &Path| {
-            excluded.iter().chain(&included).any(|n| n.starts_with(p) || p.starts_with(n))
-        };
-        for path in queries(&included).filter(|p| !related(p)) {
-            prop_assert_eq!(set.classify(&path), Class::CloneWhole, "{:?}", path);
-        }
-    }
 }

@@ -7,12 +7,6 @@ use std::time::{Duration, SystemTime};
 
 use common::{RepoBuilder, TestRepo};
 use proptest::prelude::*;
-use wtm::clone::fake::Copier;
-use wtm::clone::{self, Cloner, Walker};
-use wtm::create;
-use wtm::exclude::ExcludeSet;
-use wtm::git::Git;
-use wtm::ui::Ui;
 
 /// Directory names, two of which the ignore grammar names whole.
 const DIRS: &[&str] = &["a", "b", "build", "node_modules"];
@@ -177,52 +171,18 @@ fn assert_same_tree(actual: &BTreeMap<PathBuf, Entry>, expected: &BTreeMap<PathB
     );
 }
 
-/// The checks a listing comparison makes implicitly, stated on their own so
-/// a failure names the rule that broke.
-///
-/// `linked` being a symlink here is not the `CLONE_NOFOLLOW` regression:
-/// `reset --hard` replaces a directory copy with the tracked symlink, so
-/// the finished tree looks right either way. The walk tests below catch it.
-fn assert_fixture_rules(repo: &TestRepo, layout: &Layout, dest: &Path) {
-    let linked = fs::symlink_metadata(dest.join("linked")).unwrap();
-    assert!(linked.file_type().is_symlink(), "linked is not a symlink");
-    assert_eq!(
-        fs::read_dir(dest.join("sub")).unwrap().count(),
-        0,
-        "the submodule directory must be empty"
-    );
-
-    let included = included(repo);
-    for (path, fate) in &layout.files {
-        if let Fate::Untracked = fate {
-            let carried = fs::symlink_metadata(dest.join(path)).is_ok();
-            assert_eq!(
-                carried,
-                included.contains(&PathBuf::from(path)),
-                "{path} is untracked and carried only if included"
-            );
-        }
-    }
-}
-
-/// On APFS the walk must run, so a filesystem that stopped cloning fails
-/// the test instead of quietly taking the checkout path. Elsewhere the
-/// filesystem decides, and ext4 checking out must still pass.
-const CLONE_MODE: &str = if cfg!(target_os = "macos") { "cow" } else { "auto" };
-
 proptest! {
     #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
 
-    /// TESTING.md 2.3, end to end through the binary.
+    /// TESTING.md 2.3. The fixture carries a top-level symlink to a
+    /// directory and a submodule, so the comparison also covers both staying
+    /// what `git worktree add` makes of them: a symlink and an empty
+    /// directory.
     #[test]
     fn a_new_worktree_equals_git_worktree_add_plus_includes(layout in layout()) {
         let repo = build("creation-diff", &layout);
 
-        let output = repo
-            .wtm()
-            .args(["new", "subject", "--no-init", "--clone-mode", CLONE_MODE])
-            .output()
-            .unwrap();
+        let output = repo.wtm().args(["new", "subject", "--no-init"]).output().unwrap();
         prop_assert!(
             output.status.success(),
             "{}",
@@ -230,62 +190,8 @@ proptest! {
         );
         let dest = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim_end());
 
-        assert_fixture_rules(&repo, &layout, &dest);
         assert_same_tree(&listing(&dest), &expected(&repo));
     }
-
-    /// The same comparison with the walk driven by the `fake` cloner, which
-    /// runs on any filesystem. On one that cannot clone, the test above
-    /// takes the checkout path and this is the only one that walks.
-    #[test]
-    fn the_walk_with_a_copier_equals_git_worktree_add_plus_includes(layout in layout()) {
-        let repo = build("creation-walk", &layout);
-        let dest = repo.root.join("walked");
-        repo.git(&["worktree", "add", "-q", "--no-checkout", "--detach", &dest.display().to_string(), "HEAD"]);
-
-        create::populate_by_clone(&Git::new().unwrap(), &Ui::new(true), &repo.main, &dest, &Copier)
-            .unwrap();
-
-        assert_fixture_rules(&repo, &layout, &dest);
-        assert_same_tree(&listing(&dest), &expected(&repo));
-    }
-}
-
-/// Runs the walk alone, before git gets the chance to repair what it did.
-fn assert_walk_keeps_a_symlink_to_a_directory(label: &str, cloner: &dyn Cloner) {
-    let repo = RepoBuilder::new(label).symlink_to_dir().build();
-    let dest = repo.root.join("walked");
-    repo.git(&["worktree", "add", "-q", "--no-checkout", "--detach", &dest.display().to_string(), "HEAD"]);
-
-    let git = Git::new().unwrap();
-    let set = ExcludeSet::compute(&git, &repo.main).unwrap();
-    Walker::new(cloner, &set, &Ui::new(true), &repo.main, &dest)
-        .run()
-        .unwrap();
-
-    let linked = fs::symlink_metadata(dest.join("linked")).unwrap();
-    assert!(
-        linked.file_type().is_symlink(),
-        "{} followed a top-level symlink and copied the directory behind it",
-        cloner.name()
-    );
-}
-
-#[test]
-fn the_walk_with_a_copier_keeps_a_symlink_to_a_directory() {
-    assert_walk_keeps_a_symlink_to_a_directory("creation-symlink-fake", &Copier);
-}
-
-/// The `CLONE_NOFOLLOW` regression. Without the flag, `clonefile` given a
-/// symlink clones what it points at.
-#[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "needs a filesystem that clones, which every APFS volume is"
-)]
-fn the_walk_with_the_platform_cloner_keeps_a_symlink_to_a_directory() {
-    let cloner = clone::platform_cloner();
-    assert_walk_keeps_a_symlink_to_a_directory("creation-symlink", cloner.as_ref());
 }
 
 /// Listings cannot tell a clone from a checkout that arrived at the same

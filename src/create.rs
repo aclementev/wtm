@@ -339,10 +339,7 @@ fn act(
 }
 
 /// Fills a worktree that holds nothing but the `.git` file git wrote.
-///
-/// Public so a test can drive it with the `fake` cloner, which is the only
-/// way the walk runs on a filesystem that cannot clone.
-pub fn populate_by_clone(
+fn populate_by_clone(
     git: &Git,
     ui: &Ui,
     source: &Path,
