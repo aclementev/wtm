@@ -198,13 +198,17 @@ proptest! {
 /// contents, and a checkout is what a mistake in the creation sequence
 /// falls back to without a word. A checkout stamps the current time; a
 /// clone keeps the source's, so a file dated 2001 tells them apart.
+///
+/// Every APFS volume clones, so on macOS this always runs. Elsewhere it
+/// needs btrfs or XFS, and on a filesystem without cloning it reports that
+/// it did not run rather than passing quietly.
 #[test]
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "needs a filesystem that clones, which every APFS volume is"
-)]
 fn a_cloned_worktree_keeps_the_source_mtime_of_an_untouched_file() {
     let repo = RepoBuilder::new("creation-mtime").build();
+    if !cfg!(target_os = "macos") && !clones(&repo) {
+        eprintln!("skipped: the filesystem under target/tmp cannot clone");
+        return;
+    }
     let past = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
     File::options()
         .write(true)
@@ -231,4 +235,11 @@ fn a_cloned_worktree_keeps_the_source_mtime_of_an_untouched_file() {
 
     let mtime = fs::metadata(dest.join("file1.txt")).unwrap().modified().unwrap();
     assert_eq!(mtime, past, "the file was written, not cloned");
+}
+
+/// The method `wtm new` would pick here, asked of `wtm` itself.
+fn clones(repo: &TestRepo) -> bool {
+    let output = repo.wtm().args(["doctor", "--json"]).output().unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    json["method"]["method"] == "cow"
 }
