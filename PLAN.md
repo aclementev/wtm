@@ -81,16 +81,16 @@ behavioural test.
 
 ## 5. Creation is fast
 
-The index parser, writer and stat rewrite, with the racy-git smudge and the
-extension rules; the fallback for split index and anything unparseable;
-automatic mode becomes the default.
+The index parser and the in-place stat fill of the index `read-tree`
+wrote, guarded by the source's ctime; the refresh as the fallback for
+anything not understood; `WTM_NO_FAST_INDEX` to skip the fill.
 
-Done when: the parser matches `git ls-files --debug` on generated
-repositories of every index version; the write-then-parse property holds;
-the lie test shows git trusting our stat data rather than re-reading files;
-every planted mutation is still detected; creation on a
-hundred-thousand-file repository no longer hashes the tree, and the first
-status is under a second.
+Done when: the parser matches `git ls-files -s` on generated repositories
+of every index version and both hashes; `git diff-files` after a fill
+lists only the entries left zeroed on purpose; a file changed after the
+dirty query is left for git; every planted mutation is still detected;
+creation on a hundred-thousand-file repository no longer hashes the tree,
+and the first status is under a second.
 
 This is the riskiest code in the project. Feature 4 stays in place as its
 oracle: the two must produce identical trees, one of them without any index

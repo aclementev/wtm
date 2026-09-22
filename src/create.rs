@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::cli::CloneMode;
 use crate::clone::{self, Cloner, Method, Walker};
@@ -7,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::exclude::ExcludeSet;
 use crate::git::{Git, Oid};
 use crate::hook::{self, Hook, HookEnv};
+use crate::index::{self, HashAlgo};
 use crate::name::WorktreeName;
 use crate::repo;
 use crate::ui::Ui;
@@ -18,6 +20,10 @@ pub struct Options {
     pub branch: Option<String>,
     pub no_init: bool,
     pub clone_mode: CloneMode,
+    /// Off when `WTM_NO_FAST_INDEX` is set to any value. Git then verifies
+    /// the cloned files by reading every one, which is slower but runs none
+    /// of our index code. It is the way out if that code is ever suspected.
+    pub fast_index: bool,
 }
 
 /// `wtm new` in four steps: derive what was asked for, observe what git and
@@ -84,6 +90,7 @@ pub struct Request {
     pub workers: usize,
     pub fetch: bool,
     pub clone_mode: CloneMode,
+    pub fast_index: bool,
     /// `None` for `--no-init`. The origin comes along because it decides
     /// whether an absent file is silent or an error.
     pub hook: Option<Setting<PathBuf>>,
@@ -140,6 +147,7 @@ pub fn derive(
         workers: std::thread::available_parallelism().map_or(1, |n| n.get()),
         fetch: config.fetch.value,
         clone_mode: options.clone_mode,
+        fast_index: options.fast_index,
         hook: (!options.no_init).then(|| config.init.clone()),
         name,
     })
@@ -297,7 +305,15 @@ fn act(
     )?);
 
     match method {
-        Method::Cow => populate_by_clone(git, ui, &ws.repo.main, &request.dest, cloner)?,
+        Method::Cow => populate_by_clone(
+            git,
+            ui,
+            &ws.repo.main,
+            &request.dest,
+            &plan.source_head,
+            request.fast_index,
+            cloner,
+        )?,
         Method::Checkout => {
             ui.progress("checking out");
             let workers = format!("checkout.workers={}", request.workers);
@@ -344,9 +360,14 @@ fn populate_by_clone(
     ui: &Ui,
     source: &Path,
     dest: &Path,
+    source_head: &Oid,
+    fast_index: bool,
     cloner: &dyn Cloner,
 ) -> Result<()> {
     ui.progress("cloning");
+    // Taken before the dirty query inside `compute`, so that a file changed
+    // after git last looked at it is caught by the index fill below.
+    let since = SystemTime::now();
     let set = ExcludeSet::compute(git, source)?;
     let stats = Walker::new(cloner, &set, ui, source, dest).run()?;
     ui.progress(format!(
@@ -360,12 +381,58 @@ fn populate_by_clone(
     // `read-tree` leaves every entry's stat data zeroed, and checkout reads
     // cached stat rather than hashing, so a `reset --hard` on top of it
     // would rewrite every file from the object store and waste the clone.
-    // The refresh pays for one hash of the tree, finds the content already
-    // correct and writes the true stat back. It exits non-zero when a file
-    // needs updating, which is what we asked it to find out.
-    let _ = git.run(dest, &["update-index", "--refresh", "-q"]);
+    let filled = if fast_index {
+        fill_index(git, ui, source, dest, source_head, since)?
+    } else {
+        ui.progress("WTM_NO_FAST_INDEX is set, so git will read every file to verify the clone");
+        false
+    };
+    // Without our stat data, the refresh pays for one hash of the tree,
+    // finds the content already correct and writes the true stat back. It
+    // exits non-zero when a file needs updating, which is what we asked it
+    // to find out. After a fill it would find nothing: every entry left
+    // zeroed is one the reset should write from the object store anyway.
+    if !filled {
+        let _ = git.run(dest, &["update-index", "--refresh", "-q"]);
+    }
     ui.relay(&git.run(dest, &["reset", "-q", "--hard"])?);
     Ok(())
+}
+
+/// Writes the cloned files' stat data into the index so git trusts them
+/// without reading them. False when the index was left alone, and git has
+/// to verify the clone itself.
+fn fill_index(
+    git: &Git,
+    ui: &Ui,
+    source: &Path,
+    dest: &Path,
+    source_head: &Oid,
+    since: SystemTime,
+) -> Result<bool> {
+    let index = PathBuf::from(git.stdout(
+        dest,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )?);
+    let filled = match HashAlgo::of(source_head) {
+        Some(algo) => index::fill_stat(&index, dest, source, algo, since)?,
+        None => None,
+    };
+    match filled {
+        Some(count) => {
+            ui.progress(format!("filled stat data for {count} files"));
+            Ok(true)
+        }
+        None => {
+            ui.warn(format!(
+                "wtm cannot read the index format git wrote at {}, so git will read every file \
+                 to verify the clone. The worktree is still correct, and a newer wtm may \
+                 restore the fast path",
+                index.display()
+            ));
+            Ok(false)
+        }
+    }
 }
 
 /// `git worktree add` leaves submodule directories empty and so does
@@ -418,6 +485,7 @@ mod tests {
             workers: 4,
             fetch: false,
             clone_mode: CloneMode::Auto,
+            fast_index: true,
         }
     }
 
