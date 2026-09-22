@@ -21,6 +21,8 @@ pub struct RepoBuilder {
     files: usize,
     ignored: Vec<(String, usize)>,
     dirty: bool,
+    symlink_to_dir: bool,
+    submodule: bool,
 }
 
 impl RepoBuilder {
@@ -30,6 +32,8 @@ impl RepoBuilder {
             files: 3,
             ignored: Vec::new(),
             dirty: false,
+            symlink_to_dir: false,
+            submodule: false,
         }
     }
 
@@ -46,6 +50,21 @@ impl RepoBuilder {
     /// Leaves one tracked file modified in the main worktree.
     pub fn dirty_file(mut self) -> RepoBuilder {
         self.dirty = true;
+        self
+    }
+
+    /// Commits `linked`, a top-level symlink to the tracked directory `real`.
+    /// A clone that follows it arrives as a copy of the directory.
+    pub fn symlink_to_dir(mut self) -> RepoBuilder {
+        self.symlink_to_dir = true;
+        self
+    }
+
+    /// Commits a populated submodule at `sub`. Its checkout in the main
+    /// worktree holds a `.git` file pointing at the main repository's
+    /// gitdir, which no other worktree can use.
+    pub fn submodule(mut self) -> RepoBuilder {
+        self.submodule = true;
         self
     }
 
@@ -73,6 +92,13 @@ impl RepoBuilder {
             for i in 0..*count {
                 repo.write(&format!("{dir}/generated{i}"), "ignored\n");
             }
+        }
+        if self.symlink_to_dir {
+            repo.write("real/inside.txt", "behind a symlink\n");
+            std::os::unix::fs::symlink("real", repo.main.join("linked")).unwrap();
+        }
+        if self.submodule {
+            repo.add_submodule("sub");
         }
         repo.git(&["add", "-A"]);
         repo.git(&["commit", "-q", "-m", "initial commit"]);
@@ -133,6 +159,23 @@ impl TestRepo {
 
     pub fn git(&self, args: &[&str]) -> String {
         self.git_in(&self.main, args)
+    }
+
+    /// Makes a one-commit repository beside the main one and adds it as a
+    /// submodule at `path`. Git refuses a local path as a submodule URL
+    /// unless the file protocol is allowed.
+    fn add_submodule(&self, path: &str) {
+        let origin = self.root.join(format!("{path}-origin"));
+        std::fs::create_dir_all(&origin).unwrap();
+        std::fs::write(origin.join("module.txt"), "in the submodule\n").unwrap();
+        self.git_in(&origin, &["init", "-q", "-b", "main", "."]);
+        self.git_in(&origin, &["add", "-A"]);
+        self.git_in(
+            &origin,
+            &["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "module"],
+        );
+        let url = origin.display().to_string();
+        self.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", &url, path]);
     }
 
     /// A `wtm` invocation isolated from the developer's own home directory, so
