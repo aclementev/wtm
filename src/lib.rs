@@ -8,6 +8,7 @@ pub mod docs;
 pub mod error;
 pub mod git;
 pub mod hook;
+pub mod index;
 pub mod name;
 pub mod reaper;
 pub mod remove;
@@ -97,6 +98,7 @@ pub fn run(cli: Cli) -> Result<i32> {
                 branch: args.branch.clone(),
                 no_init: args.no_init,
                 clone_mode: args.clone_mode,
+                fast_index: std::env::var_os("WTM_NO_FAST_INDEX").is_none(),
             };
             create::run(
                 &git,

@@ -29,46 +29,52 @@ struct with no invariants) are not written.
 
 ## 2. Differential tests against git (the core)
 
-### 2.1 Index parser and writer
+### 2.1 Index parser
 
-For each index version 2, 3 and 4, and for SHA-1 and SHA-256 repos:
+For index versions 2, 3 and 4, in SHA-1 and SHA-256 repositories: build a
+repository with deep, unicode and prefix-sharing paths (for v4
+compression), a symlink, an executable, a gitlink, and for v3 and v4 an
+intent-to-add entry to set the extended flags. Set the version with `git
+update-index --index-version N`, then compare the mode, stage and path of
+every parsed entry with `git ls-files -s -z`. Every truncation of a real
+index, and a flipped byte, must be refused.
 
-1. Build a random repo (random paths including deep, unicode and
-   shared-prefix names to exercise v4 compression; random modes 100644,
-   100755, 120000; a gitlink; a merge conflict for stage entries; an
-   intent-to-add entry; a skip-worktree entry), `git update-index
-   --index-version N`.
-2. Parse `.git/index`. Compare every entry with `git ls-files --debug -s
-   -z` (paths, modes, oids, stages, all seven stat fields). This is the
-   only source of truth for the parser.
-3. Write the parsed index back, byte-compare with the original after
-   removing the extensions the writer drops. Then run `git fsck` and
-   `git status` on the rewritten index: both must succeed and status must
-   be unchanged.
+There is no writer, so there is no round-trip property. The fill changes
+40-byte prefixes and the checksum, and nothing else.
 
-Property-test variant (proptest): generate `Index` values directly
-(arbitrary entries with sorted unique paths, arbitrary extensions) and
-assert `parse(write(x)) == x` for every version. This catches padding and
-varint bugs that the small git-made fixtures miss.
+### 2.2 The fill proves git trusts the index, without tautology
 
-### 2.2 Stat rewrite proves git trusts the index, without tautology
+"Status is clean" is weak: git re-hashing every file also ends in a clean
+status. The oracle is `git diff-files --name-only`, which lists every entry
+whose stat data does not match the file on disk and decides that from stat
+alone. After a fill it must list exactly the entries left zeroed on purpose.
+If the fill wrote nothing it lists everything; if one field is wrong on one
+entry, it lists that entry.
 
-After `rewrite_stat` and `install`, asserting "status is clean" is weak:
-git could be re-hashing everything and still say clean. Two stronger
-checks:
+Fixture files carry a 2020 mtime, set before `git add`. A file written in
+the same second as the index is racy, git checks its content whatever its
+stat data says, and `diff-files` would pass with wrong stat data.
 
-- **The lie test.** Pick a tracked file in the new worktree, overwrite its
-  content with different bytes of the same length, then restore its mtime
-  with `touch -r` from a copy. `git status` must report it **clean**. That
-  proves git accepted the stat data and did not read the content. (Then
-  restore the file.)
-- **The detection test.** Plant each of: append, same-size overwrite with
-  a new mtime, delete, chmod +x (when `core.fileMode` is true), a file
-  modified within the same second as the index write. `git status` must
-  report every one.
+- **Git trusts the fill and still sees changes.** On v2 and v4: zero the
+  index with `read-tree HEAD`, delete one tracked file, fill. `diff-files`
+  lists only the deleted file. Then plant an append, a same-size
+  overwrite, a chmod +x and a symlink retarget; `git status` reports each.
+- **A change after `since` is left for git.** Overwrite a file with
+  same-size content and restore its old mtime, after `since`. The fill
+  must leave it zeroed. This is the edit that is otherwise cloned with new
+  content and reported clean.
+- **The mode comes from HEAD.** With `core.fileMode` false and an
+  executable bit on disk that HEAD does not have, `git diff --cached` is
+  empty after the fill.
+- **Both creation paths keep the clone** (macOS). `wtm new` with and
+  without `WTM_NO_FAST_INDEX`: clean status, HEAD's content in a file
+  dirty in the source, and an untouched file still carrying the source's
+  mtime, which a rewrite by git would replace with the current time.
 
-Run both on every index version and on the checkout path (where they must
-also hold, trivially).
+An earlier draft had a "lie test": swap a file's content for different
+bytes of the same length, restore its mtime, and expect a clean status. It
+cannot pass. The overwrite moves the ctime, which nothing can restore, and
+git compares ctime.
 
 ### 2.3 The clone walk equals `git worktree add` plus includes
 

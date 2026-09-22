@@ -347,11 +347,14 @@ select method                              (6.2)
 git worktree add --no-checkout --detach <dest> <source HEAD commit>
 read the real gitdir back from git (section 2.3)
 if method == cow:
+    since = now
     exclude set                            (6.3)
     clone walk source -> dest              (6.4)
-    install index                          (6.5)
+    git -C dest read-tree HEAD
     empty submodule directories            (6.6)
-    git -C dest update-index --refresh -q  (exit status ignored)
+    fill the index's stat data             (6.5)
+    if the fill did not happen:
+        git -C dest update-index --refresh -q  (exit status ignored)
     git -C dest reset -q --hard            (rewrites only what still differs)
 else:
     git -C dest -c checkout.workers=<n> -c checkout.thresholdForParallelism=100 checkout -q --detach <source HEAD>
@@ -365,14 +368,17 @@ non-empty destination even with `--no-checkout`. Detaching at the source's
 HEAD commit and switching to the base afterwards means git rewrites only the
 files that differ between source and base.
 
-The refresh is what keeps the clone. Checkout decides whether to write a
-file from the index's cached stat data and never by hashing content first,
-so a `reset --hard` over an index whose stat data is zeroed rewrites every
-file from the object store and the clone is wasted. `update-index
---refresh` spends the hashing once, finds the content already correct, and
-writes the true stat back; the reset that follows then touches only files
-that genuinely differ. It exits non-zero when a file needs updating, which
-is the ordinary case here and not a failure.
+Stat data in the index is what keeps the clone. Checkout decides whether to
+write a file from the index's cached stat data and never by hashing content
+first, so a `reset --hard` over the zeroed index `read-tree` writes would
+rewrite every file from the object store and waste the clone. Section 6.5
+fills the stat data in directly. When it cannot, `update-index --refresh`
+spends the hashing once, finds the content already correct, and writes the
+true stat back; it exits non-zero when a file needs updating, which is the
+ordinary case here and not a failure. After a fill the refresh would find
+nothing to do: every entry left zeroed is one the reset should write from
+the object store anyway. Either way the reset then touches only files that
+genuinely differ.
 
 If any step before the init hook fails, the destination directory and the
 git metadata are removed (`git worktree remove --force` after
@@ -478,7 +484,7 @@ The root is always recursed whatever its classification, because git has
 already created the destination directory and put a `.git` file in it:
 `clone_tree` needs a destination that does not exist, and `.git` has to be
 skipped. Directory mtimes are not copied. The only thing that would read
-them is the untracked cache, whose `UNTR` extension section 6.5 drops.
+them is the untracked cache, and the index `read-tree` writes has none.
 
 `clone_tree` on macOS is one `clonefile(src, dst, CLONE_NOFOLLOW)`. The
 destination must not exist and its parent must. Symlinks inside the tree
@@ -495,47 +501,71 @@ Cost model to keep in mind: on APFS the number of `clonefile` calls is what
 matters, and a cache directory scattered through many packages forces every
 ancestor open.
 
-### 6.5 Installing the index
+### 6.5 Filling the index
 
-Cloned files have new inodes and ctimes, so a copied index would make git
-re-hash every file. `wtm` writes the destination index itself:
+Cloned files have new inodes and ctimes, so no existing index describes
+them, and the index `read-tree HEAD` writes has every entry's stat data
+zeroed. Either way git would re-hash every file. `wtm` fills in the stat
+data of the index `read-tree` just wrote, in place.
 
-1. Read the source's index (`<source gitdir>/index`). Parse the header
-   (`DIRC`, version 2, 3 or 4, entry count), every entry, and every
-   extension. Index v4 uses prefix-compressed paths and must be supported;
-   large monorepos use it. If the `link` extension (split index) is present,
-   read the shared index it names and merge to a full index; if that is not
-   implemented yet, fall back: copy nothing, run `git -C dest read-tree
-   HEAD` and set `core.checkStat=minimal` in the worktree config with a
-   warning that status will be stat-fuzzy.
-2. Object hash size is 20 bytes for SHA-1 repos and 32 for SHA-256
-   (`extensions.objectFormat`). The trailing checksum uses the same hash.
-3. For each entry, `lstat` the cloned file and rewrite `ctime`, `mtime`
-   (seconds and nanoseconds, truncated to u32 like git), `dev`, `ino`
-   (low 32 bits), `uid`, `gid`, `size`. Keep `mode`, the object id and the
-   flags from the source: `core.fileMode` may be false and mode must not be
-   taken from the filesystem. Entries with the skip-worktree or
-   intent-to-add flag, and gitlinks (mode `160000`), keep their stat data
-   untouched. An entry whose file is missing in the destination is written
-   with zeroed stat data so git re-checks it. Files dirty in the source are
-   deliberately absent (section 6.3), so this is the ordinary case rather
-   than an error, and the `reset --hard` of 6.1 writes them out.
-4. Racy-git rule: any entry whose mtime in whole seconds is greater than or
-   equal to the time the index will be written gets `size` set to 0
-   ("smudged"), which forces git to verify its content. Cloned files keep
-   old mtimes, so in practice none are smudged.
-5. Extensions: keep `TREE` (cache tree; valid because the tree contents are
-   identical) and `REUC`. Drop `UNTR` (contains stat data and an absolute
-   path of the source), `FSMN` (a token for the source's fsmonitor
-   session), `EOIE` and `IEOT` (offset tables that would need recomputing),
-   `link` and `sdir` (handled in step 1).
-6. Write to `<gitdir>/worktrees/<name>/index.wtm-tmp`, fsync, rename over
-   `index`. Set the file's mtime to now.
+Stat data lives in the fixed 40-byte prefix of each entry, so filling it
+changes no entry's length and nothing else in the file moves. That is why
+this is a patch rather than a rewrite: there is no writer, no
+re-encoding of v4 paths, and the extensions (`TREE`, and `IEOT`/`EOIE`
+when `index.threads` is set) stay valid as they are. `read-tree` never
+writes a split index, an untracked cache or an fsmonitor token, whatever
+the repository's configuration says, so none of those need handling.
 
-Validation in tests: after installation, `git status --porcelain` must be
-empty and must not read file contents (measure time; a 100k-file repo must
-report clean in well under a second), and planted edits (append, same-size
-overwrite, delete, chmod when `core.fileMode` is true) must all show up.
+1. Parse. The header is `DIRC`, version 2, 3 or 4. Entries are ten
+   big-endian `u32` stat fields, the object id (20 bytes for SHA-1, 32 for
+   SHA-256, taken from the length of the source's HEAD), a `u16` of flags,
+   a second `u16` of extended flags when the flags say so (v3 and up), then
+   the path. In v2 and v3 the path is NUL-terminated and the entry is
+   padded with NULs to a multiple of eight bytes. In v4 the path is git's
+   offset varint, the number of bytes to strip from the end of the previous
+   path, followed by a NUL-terminated suffix, with no padding. Extensions
+   follow, then a trailing checksum.
+2. Refuse anything not understood completely, and write nothing: a
+   checksum that does not match (an all-zero one is `index.skipHash` and
+   is accepted); an unknown version; the extended flag in a v2 index; a
+   path length in the flags that disagrees with the decoded path; a
+   required extension (one whose signature does not start with an
+   uppercase letter, such as `link`); or extensions that do not end
+   exactly where the trailer starts. That last check catches any mistake
+   in measuring an entry, because every later offset shifts with it.
+3. For each entry, `lstat` the clone and the source file. Fill the entry
+   from the clone only when the clone's file type matches the entry's
+   mode and both the source's ctime and the clone's mtime are whole
+   seconds older than `since`. Write ctime, mtime (seconds and
+   nanoseconds), dev, ino, uid, gid and size, each truncated to 32 bits as
+   git does. Keep the mode: `core.fileMode` may be false, and then the
+   filesystem's executable bit is not the one git records. The `lstat`
+   calls run on one thread per core, because the first `lstat` of a
+   freshly cloned tree is where APFS finishes the clone, and threads halve
+   it (0.63 s against 1.3 s for 100k files).
+4. Everything else stays zeroed, and the reset of 6.1 writes it from the
+   object store. That covers a missing file (dirty in the source, so the
+   walk left it out), a gitlink (the clone has a directory there, so the
+   type check fails), and a file changed during creation. Intent-to-add,
+   skip-worktree and unmerged entries need no rule: git never trusts stat
+   data for them, and `read-tree HEAD` writes none.
+5. Recompute the checksum, write to `index.lock` and rename it over
+   `index`.
+
+`since` is taken before the dirty query of 6.3. The query says which files
+matched HEAD when it ran; a source ctime older than `since` says the file
+has not changed since. ctime is the one timestamp nothing can set back, so
+an edit that restores the old mtime (`touch -r`, `rsync -t`, `cp -p`) still
+moves it. Without this check such an edit, landing between the query and
+the clone, is cloned with its new content and git reports it clean. The
+comparison is in whole seconds because a filesystem with coarse timestamps
+rounds a later change down. Requiring the clone's mtime to be older as well
+keeps every filled entry out of git's racy window, since the index is
+written after `since`, so no entry needs smudging.
+
+A refused index costs speed, not correctness: `wtm` warns and runs the
+refresh of 6.1. `WTM_NO_FAST_INDEX`, set to any value, skips the fill the
+same way, as a way out should this code ever be suspected.
 
 ### 6.6 Submodules
 
@@ -793,10 +823,10 @@ Both: `rename(2)` is atomic within a filesystem and O(1) in tree size.
 
 The strategy is in `TESTING.md`; this section keeps the acceptance criteria.
 
-- Unit: index parser and writer round-trip on v2, v3 and v4 fixtures
-  (generate with `git update-index --index-version N`), including
-  extensions and SHA-256 repos; config precedence; name validation; trie
-  logic for the exclude walk.
+- Unit: the index parser against `git ls-files -s` on v2, v3 and v4
+  fixtures (generate with `git update-index --index-version N`) in SHA-1
+  and SHA-256 repos; config precedence; name validation; trie logic for
+  the exclude walk.
 - Integration (macOS CI on APFS, Linux CI on a btrfs or XFS loop mount,
   plus an ext4 job that must take the checkout path): build a synthetic
   repo with `research/scripts/mkrepo.sh`-like generation at 5k files with
@@ -838,7 +868,7 @@ src/config.rs          TOML loading and precedence
 src/repo.rs            git discovery, subprocess wrapper with scrubbed env
 src/exclude.rs         exclude/include sets and tries
 src/clone/mod.rs       walk; clone/macos.rs (clonefile), clone/linux.rs (FICLONE)
-src/index/             parser, writer, stat rewrite
+src/index.rs           parser and in-place stat fill
 src/create.rs          `wtm new` orchestration and rollback
 src/remove.rs          rename, synchronous delete
 src/reaper.rs          detach, priorities, sweep with flock

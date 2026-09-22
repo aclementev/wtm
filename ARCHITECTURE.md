@@ -54,11 +54,7 @@ src/
     apfs.rs       clonefile(2) implementation
     reflink.rs    FICLONE per-file implementation
     fake.rs       test double (plain copy, records calls)
-  index/
-    mod.rs        `Index`, `Entry`, `StatData`, `Extension`, `HashAlgo`
-    parse.rs      bytes -> Index (v2, v3, v4)
-    write.rs      Index -> bytes (same version as source, checksum)
-    stat.rs       `rewrite_stat(&mut Index, root, now)`; racy smudge
+  index.rs        `HashAlgo`, `Entry`, the parser, and the in-place stat fill
   hook.rs         `Hook` (what resolution came to), the one stat, `HookEnv`, execution
   create.rs       `wtm new` orchestration; `Rollback` guard
   remove.rs       `wtm rm`; rename to trash; synchronous delete
@@ -275,21 +271,17 @@ recursive walk calling `clone_file` (open, `FICLONE`, `fchmod`,
 ### 3.7 Index
 
 ```rust
-pub enum HashAlgo { Sha1, Sha256 }   // from extensions.objectFormat; sets oid and checksum length
-pub struct StatData { pub ctime: (u32, u32), pub mtime: (u32, u32), pub dev: u32, pub ino: u32, pub uid: u32, pub gid: u32, pub size: u32 }
-pub struct Entry { pub stat: StatData, pub mode: u32, pub oid: Vec<u8>, pub flags: u16, pub ext_flags: Option<u16>, pub path: Vec<u8> }
-impl Entry { pub fn stage(&self) -> u8; pub fn skip_worktree(&self) -> bool; pub fn intent_to_add(&self) -> bool; pub fn is_gitlink(&self) -> bool; }
-pub enum Extension { Tree(Vec<u8>), Reuc(Vec<u8>), Untr, Fsmn, Eoie, Ieot, Link(Vec<u8>), Sdir, Other([u8; 4], Vec<u8>) }
-pub struct Index { pub version: u32, pub algo: HashAlgo, pub entries: Vec<Entry>, pub extensions: Vec<Extension> }
+pub enum HashAlgo { Sha1, Sha256 }   // HashAlgo::of(&head_oid); sets oid and checksum length
+pub struct Entry { pub offset: usize, pub mode: u32, pub flags: u16, pub path: Vec<u8> }
 
-pub fn parse(bytes: &[u8], algo: HashAlgo) -> Result<Index>;          // v2, v3, v4; verifies checksum
-pub fn write(index: &Index) -> Vec<u8>;                                // same version; drops Untr/Fsmn/Eoie/Ieot/Sdir; recomputes checksum
-pub fn has_split_index(index: &Index) -> bool;
-/// Rewrites stat data from lstat of each entry under `root`; smudges racy entries
-/// (mtime seconds >= `now`); leaves gitlinks, skip-worktree and intent-to-add alone;
-/// zeroes stat for missing files and returns their paths.
-pub fn rewrite_stat(index: &mut Index, root: &Path, now: SystemTime) -> Result<Vec<PathBuf>>;
-pub fn install(index: &Index, gitdir: &Path) -> Result<()>;            // temp file, fsync, rename
+/// Pure. v2, v3, v4; None for anything not understood completely.
+pub fn entries(bytes: &[u8], algo: HashAlgo) -> Option<Vec<Entry>>;
+/// Fills the stat data `read-tree` left zeroed, from lstat of the clone, for
+/// every entry whose source file has not changed since `since`, with the lstat
+/// calls spread over threads; writes via index.lock and rename.
+/// Ok(None): not understood, nothing written.
+pub fn fill_stat(index: &Path, dest: &Path, source: &Path, algo: HashAlgo, since: SystemTime)
+    -> Result<Option<usize>>;
 ```
 
 ### 3.8 Creation, removal, reaping
@@ -396,7 +388,6 @@ pub enum Error {
     BranchCheckedOut { branch: String, at: PathBuf },   // 1
     Io { path: PathBuf, source: std::io::Error },       // 1
     Config { file: PathBuf, message: String },          // 1
-    Index(String),                          // 1
     ...
 }
 impl Error { pub fn exit_code(&self) -> i32; }
@@ -410,7 +401,7 @@ Four steps, of which only the second and fourth touch the outside world.
 run -> Git::new -> Repo::discover -> config::load -> Workspace::new
   -> create::run
 
-     derive   (pure)  args + config      -> Request { dest, branch, base_spec, workers, fetch }
+     derive   (pure)  args + config      -> Request { dest, branch, base_spec, workers, fetch, fast_index }
      fetch    (io)    only when asked, before observing, so the base is fresh
      observe  (io)    every git and filesystem question, asked once
                       -> Observed { source_head, base, branch: BranchState, in_progress, dest_exists }
@@ -418,9 +409,11 @@ run -> Git::new -> Repo::discover -> config::load -> Workspace::new
                       -> Plan { source_head, branch: BranchAction::{Create{base}, Reuse} }
      act      (io)    git worktree add --no-checkout --detach
                       -> clone::decide -> if Cow: ExcludeSet::compute -> Walker::run
-                                          -> index::{parse, rewrite_stat, install}
+                                          -> git read-tree HEAD
                                           -> empty submodules
-                                          -> git update-index --refresh; git reset --hard
+                                          -> index::fill_stat, unless WTM_NO_FAST_INDEX
+                                          -> git update-index --refresh, only if not filled
+                                          -> git reset --hard
                          else:            git checkout --detach with workers
                       -> git checkout -b
                       -> hook::resolve -> hook::run

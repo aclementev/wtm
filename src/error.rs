@@ -56,9 +56,6 @@ pub enum Error {
 
     #[error("{}: {message}", file.display())]
     Config { file: PathBuf, message: String },
-
-    #[error("{0}")]
-    Index(String),
 }
 
 impl Error {
