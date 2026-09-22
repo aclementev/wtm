@@ -179,7 +179,17 @@ fn a_killed_sweeper_leaves_a_lock_the_next_sweep_can_take() {
         .spawn()
         .expect("spawn the sweeper");
 
-    std::thread::sleep(Duration::from_millis(150));
+    // A fixed delay is either too short to see the sweep start or long
+    // enough for a fast filesystem to finish it. The entry holds twenty
+    // subdirectories, so the first one gone means deleting is under way
+    // with most of the tree still left.
+    while std::fs::read_dir(&entry).map_or(0, |e| e.count()) == 20 {
+        assert!(
+            sweeper.try_wait().expect("poll the sweeper").is_none(),
+            "the sweeper exited before anything was seen deleted"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     sweeper.kill().expect("kill the sweeper");
     sweeper.wait().expect("reap the sweeper");
 
