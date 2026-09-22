@@ -5,7 +5,7 @@ use crate::cli::CloneMode;
 use crate::clone::{self, Cloner, Method, Walker};
 use crate::config::{Config, Setting};
 use crate::error::{Error, Result};
-use crate::exclude::ExcludeSet;
+use crate::exclude::{self, ExcludeSet};
 use crate::git::{Git, Oid};
 use crate::hook::{self, Hook, HookEnv};
 use crate::index::{self, HashAlgo};
@@ -330,6 +330,9 @@ fn act(
                     plan.source_head.as_str(),
                 ],
             )?);
+            if !ws.repo.bare {
+                copy_included(git, &ws.repo.main, &request.dest)?;
+            }
         }
     }
 
@@ -433,6 +436,28 @@ fn fill_index(
             Ok(false)
         }
     }
+}
+
+/// The checkout path's share of `.worktreeinclude`. Git wrote only tracked
+/// files, so the untracked ones the include file matches are copied in from
+/// the source, before the branch step as the walk would have carried them.
+fn copy_included(git: &Git, source: &Path, dest: &Path) -> Result<()> {
+    for rel in exclude::included_paths(git, source)? {
+        let (from, to) = (source.join(&rel), dest.join(&rel));
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        // Git lists an untracked symlink as a file. Copying it would copy
+        // what it points at.
+        let meta = std::fs::symlink_metadata(&from).map_err(|e| Error::io(&from, e))?;
+        if meta.is_symlink() {
+            let target = std::fs::read_link(&from).map_err(|e| Error::io(&from, e))?;
+            std::os::unix::fs::symlink(target, &to).map_err(|e| Error::io(&to, e))?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|e| Error::io(&to, e))?;
+        }
+    }
+    Ok(())
 }
 
 /// `git worktree add` leaves submodule directories empty and so does
