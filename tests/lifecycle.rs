@@ -166,6 +166,7 @@ fn a_usage_error_exits_two() {
     let repo = RepoBuilder::new("lifecycle-exits").build();
 
     repo.wtm().args(["new", "bad name"]).assert().code(2);
+    repo.wtm().args(["new", "x.lock"]).assert().code(2);
     repo.wtm().args(["cd", "missing"]).assert().code(2);
     repo.wtm().args(["rm", "never-existed"]).assert().code(2);
 }

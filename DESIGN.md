@@ -319,19 +319,22 @@ In order, each failing with a specific message:
    (section 7). Checked before anything is made, so a mistyped path costs
    nothing. A hook that runs and fails is a different outcome with its own
    exit code.
-3. The source worktree is not mid-operation: none of `rebase-merge`,
+3. The branch name is one git accepts (`git check-ref-format`). A worktree
+   name can be valid and still make a branch git refuses, such as `x.lock`,
+   and git would otherwise say so only after the whole tree was cloned.
+4. The source worktree is not mid-operation: none of `rebase-merge`,
    `rebase-apply`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
    `BISECT_LOG` exist in its gitdir. Otherwise fail; the caller must finish
    or abort that operation first.
-4. The source worktree is not sparse (`core.sparseCheckout` false and no
+5. The source worktree is not sparse (`core.sparseCheckout` false and no
    `info/sparse-checkout`). If it is, fall back to checkout with a warning;
    a clone would inherit the sparse patterns.
-5. The name is free: no worktree of ours has it, whichever `<repo-id>`
+6. The name is free: no worktree of ours has it, whichever `<repo-id>`
    directory it is in, and nothing exists at the destination. A removed
    worktree never holds one: it is renamed under the trash with a suffix
    nothing asks for, so the name is free the moment `wtm rm` returns.
-6. The branch rules of 4.1.
-7. Method selection (section 6.2) when `--clone-mode` is `auto` or `cow`.
+7. The branch rules of 4.1.
+8. Method selection (section 6.2) when `--clone-mode` is `auto` or `cow`.
 
 ## 6. Creating a worktree
 
