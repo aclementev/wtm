@@ -10,8 +10,8 @@ const MAX_BYTES: usize = 200;
 /// `.` or `..` component, at most 200 bytes. A name may contain `/`, which
 /// becomes a directory separator on disk.
 ///
-/// Invariant: `Workspace::dir(name)` is always strictly inside
-/// `Workspace::repo_dir()`. The validation exists to guarantee that, since the
+/// Invariant: `Repo::dir(name)` is always strictly inside
+/// `Repo::repo_dir()`. The validation exists to guarantee that, since the
 /// name arrives from the command line and is joined onto a path we delete from.
 ///
 /// The name doubles as the branch name once `branch_prefix` is applied. Git

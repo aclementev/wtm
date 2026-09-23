@@ -196,10 +196,11 @@ fn assert_same_tree(actual: &BTreeMap<PathBuf, Entry>, expected: &BTreeMap<PathB
 proptest! {
     #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
 
-    /// TESTING.md 2.3. The fixture carries a top-level symlink to a
-    /// directory and a submodule, so the comparison also covers both staying
-    /// what `git worktree add` makes of them: a symlink and an empty
-    /// directory.
+    /// Both sides of the comparison come from git, so the test cannot agree
+    /// with a bug in our own matching. The fixture carries a top-level
+    /// symlink to a directory and a submodule, so the comparison also covers
+    /// both staying what `git worktree add` makes of them: a symlink and an
+    /// empty directory.
     #[test]
     fn a_new_worktree_equals_git_worktree_add_plus_includes(layout in layout()) {
         let repo = build("creation-diff", &layout);

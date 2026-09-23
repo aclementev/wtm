@@ -14,8 +14,8 @@ enum Layer {
 
 /// One configuration key with the layers it accepts. A key is absent from a
 /// layer on purpose: `dir`, `branch_prefix` and `fetch` are personal settings
-/// a repository must not reach, and `base` describes a repository, so a
-/// global default for it would be meaningless.
+/// a repository must not reach, and `base` and `init` describe a repository,
+/// so only its own file may set them.
 struct Key {
     name: &'static str,
     env: &'static str,
@@ -76,18 +76,17 @@ fn keys() -> Vec<Key> {
             value: |_| "true",
             default: "false",
         },
-        // The only key both files may set. Absolute values, so precedence is
-        // tested apart from the relative-path rule below.
+        // Absolute values, so precedence is tested apart from the
+        // relative-path rule below.
         Key {
             name: "init",
             env: "WTM_INIT",
-            layers: &[Layer::Flag, Layer::Env, Layer::Project, Layer::Global],
+            layers: &[Layer::Flag, Layer::Env, Layer::Project],
             set_flag: Some(|f, v| f.init = Some(PathBuf::from(v))),
             value: |layer| match layer {
                 Layer::Flag => "/flag/init.sh",
                 Layer::Env => "/env/init.sh",
-                Layer::Project => "/project/init.sh",
-                Layer::Global => "/global/init.sh",
+                _ => "/project/init.sh",
             },
             default: UNCHECKED,
         },
@@ -192,33 +191,40 @@ fn write_layer(file: &Path, key: &Key, present: bool, layer: Layer) {
     }
 }
 
-/// Cloning a repository must not be able to relocate your worktrees, rename
-/// your branches or add a network round-trip to every creation.
+/// A file that sets a key it does not own fails, naming the file and the
+/// key, rather than being ignored. Cloning a repository must not relocate
+/// your worktrees, rename your branches or add a network round-trip, and a
+/// global `init` would outrank every repository's own `wtm-init.sh`.
 #[test]
-fn a_project_cannot_set_a_personal_key() {
+fn a_file_refuses_every_key_it_does_not_own() {
     let dir = common::repo::scratch("config-scope");
+    let file = dir.join("config.toml");
 
-    for key in [
-        "dir = \"/elsewhere\"",
-        "branch_prefix = \"theirs/\"",
-        "fetch = true",
-    ] {
-        let file = dir.join("project.toml");
-        std::fs::write(&file, format!("{key}\n")).unwrap();
+    for key in keys() {
+        for layer in [Layer::Project, Layer::Global] {
+            if key.layers.contains(&layer) {
+                continue;
+            }
+            std::fs::write(&file, toml_for(key.name, (key.value)(layer))).unwrap();
+            let (project, global) = match layer {
+                Layer::Project => (Some(file.as_path()), None),
+                _ => (None, Some(file.as_path())),
+            };
 
-        let message = config::load(
-            &FlagOverrides::default(),
-            &|_| None,
-            Some(&file),
-            None,
-            &dir,
-            &dir,
-        )
-        .expect_err("a personal key in a project file must fail")
-        .to_string();
+            let message = config::load(
+                &FlagOverrides::default(),
+                &|_| None,
+                project,
+                global,
+                &dir,
+                &dir,
+            )
+            .expect_err(&format!("{} in the {layer:?} file must fail", key.name))
+            .to_string();
 
-        assert!(message.contains(&file.display().to_string()), "{message}");
-        assert!(message.contains("personal setting"), "{message}");
+            assert!(message.contains(&file.display().to_string()), "{message}");
+            assert!(message.contains(key.name), "{message}");
+        }
     }
 }
 

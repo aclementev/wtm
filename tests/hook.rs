@@ -38,19 +38,9 @@ fn the_hook_sees_every_variable_and_runs_inside_the_new_worktree() {
     assert_eq!(value("WTM_HOOK_ROOT"), worktree.display().to_string());
     assert_eq!(value("WTM_HOOK_NAME"), "feat/login");
     assert_eq!(value("WTM_HOOK_BRANCH"), "feat/login");
-    assert_eq!(value("WTM_HOOK_BASE_REF"), "origin/HEAD");
     assert_eq!(value("WTM_HOOK_BASE_SHA"), head);
     assert_eq!(value("WTM_HOOK_MAIN"), repo.main.display().to_string());
-    assert_eq!(value("WTM_HOOK_REPO_ID"), repo.repo_id());
-    // Which one it is depends on the filesystem the tests run on, so this
-    // asserts only that a real method was named. The spelling is pinned in
-    // the clone tests, which first establish that cloning works here.
-    let method = value("WTM_HOOK_METHOD");
-    assert!(
-        matches!(method.as_str(), "cow" | "checkout"),
-        "WTM_HOOK_METHOD was {method:?}"
-    );
-    assert_eq!(seen.len(), 8, "no variable beyond the contract: {seen:?}");
+    assert_eq!(seen.len(), 5, "no variable beyond the contract: {seen:?}");
 
     let cwd = std::fs::read_to_string(worktree.join("hook-pwd.txt")).unwrap();
     assert_eq!(Path::new(cwd.trim_end()), worktree);
@@ -266,11 +256,6 @@ fn init_reruns_in_the_current_worktree_and_refuses_outside_one() {
     assert_eq!(value("WTM_HOOK_NAME"), "task");
     assert_eq!(value("WTM_HOOK_BRANCH"), "task");
     assert_eq!(value("WTM_HOOK_BASE_SHA"), repo.git(&["rev-parse", "HEAD"]));
-    assert_eq!(
-        value("WTM_HOOK_METHOD"),
-        "",
-        "a rerun cannot know the method"
-    );
 
     let outside = repo.wtm().arg("init").output().unwrap();
     assert_eq!(outside.status.code(), Some(2));

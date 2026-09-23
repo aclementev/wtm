@@ -1,8 +1,15 @@
+//! Removal that returns at once. A removed worktree is renamed into its
+//! repository's trash directory, which takes one `rename(2)` whatever its
+//! size, and a detached reaper unlinks it afterwards. Nothing depends on the
+//! reaper finishing: any later command, or `wtm gc`, starts another, and a
+//! half-deleted entry is simply resumed.
+
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::{Error, Result};
 use crate::ui::Ui;
@@ -12,19 +19,123 @@ use crate::ui::Ui;
 /// is in the trash" is otherwise a race against that reaper.
 const NO_REAPER: &str = "WTM_NO_REAPER";
 
-/// What a sweep did. `failed` holds paths that survived, which the caller
-/// turns into exit 1.
+/// Takes the tree at `path` away. Under `wait`, or when it cannot be renamed
+/// into `trash`, it is deleted here and now. Otherwise it is renamed into
+/// `trash` under a name built from `label`, and a detached reaper unlinks it.
+///
+/// The rename is `std::fs::rename`, which is `rename(2)` and nothing else,
+/// never `mv` or a helper that would silently copy the tree to another
+/// filesystem. A trash elsewhere fails with `EXDEV`, a mount point with
+/// `EBUSY`, and both fall back to deleting in place.
+pub fn discard(ui: &Ui, path: &Path, trash: &Path, label: &str, wait: bool) -> Result<()> {
+    if !wait {
+        match rename_into(path, trash, label) {
+            Ok(()) => return spawn_reaper(trash),
+            Err(error) => ui.warn(format!("{}; deleting it in place instead", why(&error))),
+        }
+    }
+    report(ui, delete(path))
+}
+
+/// Empties the trash directories that have anything in them: a detached
+/// reaper each, or a sweep in this process under `wait`, which reports what
+/// it did.
+pub fn collect(ui: &Ui, trashes: &[PathBuf], wait: bool) -> Result<()> {
+    let full: Vec<PathBuf> = trashes
+        .iter()
+        .filter(|trash| has_entries(trash))
+        .cloned()
+        .collect();
+    if !wait {
+        return full.iter().try_for_each(|trash| spawn_reaper(trash));
+    }
+    let stats = sweep(ui, &full);
+    ui.progress(format!(
+        "swept {} entries, {} left to another sweep",
+        stats.deleted, stats.skipped
+    ));
+    match stats.failed {
+        0 => Ok(()),
+        count => Err(Error::Undeleted(count)),
+    }
+}
+
+/// The reaper itself: detach from the caller for good, then sweep `trash`.
+/// `wtm gc --detach --trash <dir>` lands here, before any repository is
+/// discovered, because a reaper needs one directory and nothing else.
+pub fn reap(ui: &Ui, trash: &Path) -> Result<()> {
+    detach_self()?;
+    match sweep(ui, std::slice::from_ref(&trash.to_path_buf())).failed {
+        0 => Ok(()),
+        count => Err(Error::Undeleted(count)),
+    }
+}
+
+fn has_entries(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some())
+}
+
+fn rename_into(path: &Path, trash: &Path, label: &str) -> io::Result<()> {
+    std::fs::create_dir_all(trash)?;
+    // Bounded rather than a retry until it works: every attempt reads a
+    // clock, and a clock that never moves would otherwise hang `wtm rm`.
+    let mut last = None;
+    for _ in 0..16 {
+        let entry = trash.join(entry_name(label));
+        match std::fs::rename(path, &entry) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("no trash name was free")))
+}
+
+/// Unique within one trash directory, which is all that is asked of it: the
+/// rename itself refuses a collision, so the clock only has to advance.
+/// Slashes become dashes so a nested name stays one directory.
+fn entry_name(label: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    format!("{}-{}-{nanos}", label.replace('/', "-"), std::process::id())
+}
+
+/// The two failures the design expects, said in words. Anything else is
+/// reported as the operating system worded it.
+fn why(error: &io::Error) -> String {
+    match error.raw_os_error() {
+        Some(libc::EXDEV) => "the trash is on another filesystem".to_string(),
+        Some(libc::EBUSY) => "the worktree is in use".to_string(),
+        _ => error.to_string(),
+    }
+}
+
+/// Paths a synchronous delete could not remove are the user's to deal with,
+/// so they are named and the command exits 1.
+fn report(ui: &Ui, failed: Vec<PathBuf>) -> Result<()> {
+    for path in &failed {
+        ui.warn(format!("could not remove {}", path.display()));
+    }
+    match failed.len() {
+        0 => Ok(()),
+        count => Err(Error::Undeleted(count)),
+    }
+}
+
+/// What a sweep did. `failed` counts paths that survived, which the caller
+/// turns into exit 1; each has already been named in a warning.
 #[derive(Default)]
-pub struct SweepStats {
-    pub deleted: usize,
-    pub skipped: usize,
-    pub failed: Vec<PathBuf>,
+struct SweepStats {
+    deleted: usize,
+    skipped: usize,
+    failed: usize,
 }
 
 /// Runs the sweep in a process that outlives this one. The child holds no
 /// descriptor of ours, so `$(wtm rm x)` sees end of file immediately rather
 /// than waiting for the unlink to finish.
-pub fn spawn_detached_reaper(trash: &Path) -> Result<()> {
+fn spawn_reaper(trash: &Path) -> Result<()> {
     if std::env::var_os(NO_REAPER).is_some() {
         return Ok(());
     }
@@ -57,7 +168,7 @@ pub fn spawn_detached_reaper(trash: &Path) -> Result<()> {
 /// Puts this process in the background for good: own session, no inherited
 /// streams, and low enough priority that sweeping never competes with the
 /// work the user is actually doing.
-pub fn detach_self() -> Result<()> {
+fn detach_self() -> Result<()> {
     // EPERM here means we already lead a process group, which is just as good.
     unsafe { libc::setsid() };
     redirect_streams()?;
@@ -118,7 +229,7 @@ fn lower_priority() {
 /// The claim is a `flock` on the entry's own directory inode: no lock file to
 /// leave behind, and the kernel drops it if we are killed, so a half-deleted
 /// tree is simply resumed by whoever sweeps next.
-pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> SweepStats {
+fn sweep(ui: &Ui, trash_dirs: &[PathBuf]) -> SweepStats {
     let mut stats = SweepStats::default();
     for trash in trash_dirs {
         let Ok(entries) = std::fs::read_dir(trash) else {
@@ -137,7 +248,7 @@ pub fn sweep(trash_dirs: &[PathBuf], ui: &Ui) -> SweepStats {
                     for path in &failed {
                         ui.warn(format!("could not remove {}", path.display()));
                     }
-                    stats.failed.extend(failed);
+                    stats.failed += failed.len();
                 }
             }
         }
@@ -162,7 +273,7 @@ fn sweep_entry(path: &Path) -> Claim {
     if !locked {
         return Claim::NotOurs;
     }
-    Claim::Took(delete_tree_sync(path))
+    Claim::Took(delete(path))
 }
 
 /// Deletes a tree, returning the paths it could not remove. A path that is
@@ -171,7 +282,7 @@ fn sweep_entry(path: &Path) -> Claim {
 /// The fast path is `remove_dir_all`. Only when that fails does the slow walk
 /// run, clearing the immutable flag and restoring permissions as it goes,
 /// because a cloned file on macOS inherits the lock of the file it came from.
-pub fn delete_tree_sync(path: &Path) -> Vec<PathBuf> {
+fn delete(path: &Path) -> Vec<PathBuf> {
     if path.symlink_metadata().is_err() {
         return Vec::new();
     }

@@ -161,6 +161,38 @@ fn new_refuses_a_branch_that_is_checked_out_elsewhere() {
         .stderr(predicates::str::contains("already checked out"));
 }
 
+/// `wtm rm` keeps the branch, so `wtm new` with the same name picks the work
+/// up where it was left. A `--base` typed with it is a request the existing
+/// branch cannot honour, so that is refused before anything is made.
+#[test]
+fn new_reuses_an_existing_branch_as_it_is_and_refuses_an_explicit_base() {
+    let repo = RepoBuilder::new("lifecycle-reuse").build();
+    let path = repo.wtm().args(["new", "resume"]).output().unwrap().stdout;
+    let path = PathBuf::from(String::from_utf8(path).unwrap().trim_end());
+    std::fs::write(path.join("progress.txt"), "half done\n").unwrap();
+    repo.git_in(&path, &["add", "progress.txt"]);
+    repo.git_in(&path, &["commit", "-q", "-m", "half done"]);
+    let tip = repo.git_in(&path, &["rev-parse", "HEAD"]);
+    repo.wtm().args(["rm", "resume"]).assert().success();
+
+    repo.wtm()
+        .args(["new", "resume", "--base", "main"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("drop --base"));
+    assert!(!path.exists(), "a refused creation made nothing");
+
+    let output = repo.wtm().args(["new", "resume"]).output().unwrap();
+    assert!(output.status.success());
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("warning"),
+        "a plain reuse is silent: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(repo.git_in(&path, &["rev-parse", "HEAD"]), tip);
+    assert_eq!(repo.git_in(&path, &["branch", "--show-current"]), "resume");
+}
+
 #[test]
 fn a_usage_error_exits_two() {
     let repo = RepoBuilder::new("lifecycle-exits").build();

@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 
 use common::repo::scratch;
 use common::{TestRepo, wait_until_trusted};
+use wtm::clone::index::{self, HashAlgo};
 use wtm::git::Oid;
-use wtm::index::{self, HashAlgo};
 
 const COMMITTED: &str = "deep/a/b/c/d/e/shared-prefix-1.txt";
 
@@ -279,10 +279,9 @@ fn creation_keeps_the_clone_with_and_without_the_fast_index() {
     repo.write("top.txt", "modified in the source\n");
     wait_until_trusted();
 
-    for (name, disable, expected) in [
-        ("fast", false, "filled stat data for"),
-        ("slow", true, "WTM_NO_FAST_INDEX is set"),
-    ] {
+    // Both ways git can end up reading every file say so in these words:
+    // the escape hatch, and an index the parser refused.
+    for (name, disable) in [("fast", false), ("slow", true)] {
         let mut command = repo.wtm();
         command.args(["new", name, "--clone-mode", "cow"]);
         if disable {
@@ -291,7 +290,11 @@ fn creation_keeps_the_clone_with_and_without_the_fast_index() {
         let output = command.output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{name}: {stderr}");
-        assert!(stderr.contains(expected), "{name}: {stderr}");
+        assert_eq!(
+            stderr.contains("git will read every file"),
+            disable,
+            "{name}: {stderr}"
+        );
 
         use std::os::unix::ffi::OsStrExt;
         let dest = PathBuf::from(std::ffi::OsStr::from_bytes(output.stdout.trim_ascii_end()));

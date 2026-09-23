@@ -3,6 +3,8 @@ mod common;
 use std::path::PathBuf;
 use std::process::Command;
 
+use clap::CommandFactory;
+
 use common::RepoBuilder;
 
 const COMMANDS: [&str; 10] = [
@@ -29,11 +31,73 @@ fn help_text_is_reviewed_not_drifted() {
     }
 }
 
-/// The skill is generated from the same clap definitions as `--help`, so this
-/// snapshot also catches a flag whose description changed in only one place.
+/// The skill is written by hand, so a renamed flag or command would leave it
+/// teaching something that no longer exists. Every one it names in code is
+/// checked against the definitions `--help` is built from.
 #[test]
-fn the_agent_skill_is_reviewed_not_drifted() {
-    insta::assert_snapshot!("agent-skill", run(&["agent", "skill"]));
+fn the_agent_skill_names_only_commands_and_flags_that_exist() {
+    let mut cli = wtm::cli::Cli::command();
+    cli.build();
+    let commands: Vec<&str> = cli.get_subcommands().map(|c| c.get_name()).collect();
+    let flags: Vec<&str> = std::iter::once(&cli)
+        .chain(cli.get_subcommands())
+        .flat_map(|c| c.get_arguments().filter_map(|a| a.get_long()))
+        .collect();
+
+    let skill = run(&["agent", "skill"]);
+    // Splitting on backticks puts every inline span and fenced block at an
+    // odd index, which is where commands and flags are written.
+    for code in skill.split('`').skip(1).step_by(2) {
+        let words: Vec<&str> = code.split_whitespace().collect();
+        for pair in words.windows(2) {
+            let program = pair[0].trim_start_matches(|c: char| !c.is_alphanumeric());
+            let command = pair[1].trim_end_matches(|c: char| !c.is_alphanumeric());
+            if program == "wtm" && command.starts_with(|c: char| c.is_ascii_lowercase()) {
+                assert!(
+                    commands.contains(&command),
+                    "the skill names `wtm {command}`"
+                );
+            }
+        }
+        for word in &words {
+            if let Some(flag) = word.strip_prefix("--") {
+                let flag = flag.trim_end_matches(|c: char| !c.is_alphanumeric());
+                assert!(flags.contains(&flag), "the skill names `--{flag}`");
+            }
+        }
+    }
+}
+
+/// Agents that follow the Agent Skills format refuse a skill whose front
+/// matter breaks its limits, and the description is the part most often
+/// edited.
+#[test]
+fn the_agent_skill_front_matter_meets_the_agent_skills_limits() {
+    let skill = run(&["agent", "skill"]);
+    let front = skill
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .map(|(front, _)| front)
+        .expect("front matter between --- lines");
+    let field = |key: &str| {
+        front
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+            .unwrap_or_default()
+    };
+
+    let name = field("name");
+    let valid_name = !name.is_empty()
+        && name.len() <= 64
+        && name.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    assert!(valid_name, "name {name:?}");
+    assert!((1..=1024).contains(&field("description").len()));
+    assert!(field("compatibility").len() <= 500);
 }
 
 #[test]
