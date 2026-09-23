@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use proptest::prelude::*;
 use wtm::clone::exclude::{Class, ExcludeSet};
+use wtm::git::GitVersion;
 use wtm::name::WorktreeName;
 use wtm::repo::{Repo, RepoId};
 
@@ -15,6 +16,7 @@ fn repo() -> Repo {
         PathBuf::from("/repos/monorepo"),
         false,
         Path::new("/data/root"),
+        GitVersion::default(),
     )
 }
 

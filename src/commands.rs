@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::clone;
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::git::{self, GitVersion, Oid};
+use crate::git::{self, Oid};
 use crate::hook::{self, HookEnv};
 use crate::name::WorktreeName;
 use crate::repo::{Repo, Worktree};
@@ -265,7 +265,7 @@ pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {
 /// the outcome or explains one that did. A machine that cannot clone is a
 /// supported machine, so the exit code stays 0; only a question we could
 /// not ask is a failure.
-pub fn doctor(ui: &Ui, repo: &Repo, git_version: &GitVersion, json: bool) -> Result<i32> {
+pub fn doctor(ui: &Ui, repo: &Repo, json: bool) -> Result<i32> {
     let root = repo.root();
     let common_dir = git::stdout(
         &repo.main,
@@ -303,7 +303,7 @@ pub fn doctor(ui: &Ui, repo: &Repo, git_version: &GitVersion, json: bool) -> Res
     if json {
         ui.emit(
             serde_json::to_string_pretty(&json!({
-                "git_version": git_version.raw,
+                "git_version": repo.git.raw,
                 "repo": { "main": repo.main, "common_dir": common_dir,
                           "id": repo.id.as_str(), "device": repo_device,
                           "bare": repo.bare },
@@ -322,7 +322,7 @@ pub fn doctor(ui: &Ui, repo: &Repo, git_version: &GitVersion, json: bool) -> Res
     }
 
     let rows = vec![
-        vec!["git".into(), git_version.raw.clone()],
+        vec!["git".into(), repo.git.raw.clone()],
         vec!["repo".into(), repo.main.display().to_string()],
         vec!["repo id".into(), repo.id.to_string()],
         vec!["git dir".into(), common_dir.clone()],

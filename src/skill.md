@@ -1,7 +1,7 @@
 ---
 name: wtm
 description: Use before changing code in a git repository, to do the work in a worktree of its own instead of the main checkout, and whenever you need to create, find or remove worktrees.
-compatibility: Requires the wtm command-line tool and git 2.36 or later.
+compatibility: Requires the wtm command-line tool and git 2.31 or later.
 ---
 
 # Working in wtm worktrees

@@ -19,9 +19,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 
-  # The same suite on the three filesystems wtm behaves differently on.
-  # Fixtures live under target/tmp, so that is where the filesystem under
-  # test is mounted.
+  # The same suite on the three filesystems wtm behaves differently on, and
+  # on the oldest git it supports, which has no `worktree list -z`. Fixtures
+  # live under target/tmp, so that is where the filesystem under test is
+  # mounted.
   test:
     name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -38,6 +39,10 @@ jobs:
           - name: Linux, ext4 checkout
             os: ubuntu-latest
             fs: ext4
+          - name: Linux, XFS reflink, git 2.31
+            os: ubuntu-latest
+            fs: xfs
+            git: 2.31.0
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -66,5 +71,29 @@ jobs:
           echo probe > target/tmp/probe
           cp --reflink=always target/tmp/probe target/tmp/probe.clone
           rm target/tmp/probe target/tmp/probe.clone
+
+      # conda-forge keeps prebuilt binaries of old git releases. Only git goes
+      # on PATH: the environment also holds its own curl, perl, tput and more,
+      # which would shadow the runner's. `init-shell: none` keeps activation
+      # out of the rc files the shell wrapper tests source.
+      - name: Install git ${{ matrix.git }}
+        if: matrix.git
+        id: old-git
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: old-git
+          create-args: -c conda-forge git=${{ matrix.git }}
+          init-shell: none
+          cache-environment: true
+      - name: Put git ${{ matrix.git }} first on PATH
+        if: matrix.git
+        run: |
+          mkdir -p "$RUNNER_TEMP/old-git"
+          ln -s "${{ steps.old-git.outputs.environment-path }}/bin/git" "$RUNNER_TEMP/old-git/git"
+          echo "$RUNNER_TEMP/old-git" >> "$GITHUB_PATH"
+      # Fail here, not with a passing suite that ran the runner's own git.
+      - name: Check the git under test
+        if: matrix.git
+        run: git --version | grep -Fx "git version ${{ matrix.git }}"
 
       - run: cargo test --no-fail-fast

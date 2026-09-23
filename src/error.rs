@@ -16,7 +16,9 @@ pub enum Error {
         stderr: String,
     },
 
-    #[error("git is {found}, but wtm needs at least {needed}")]
+    #[error(
+        "git {found} is older than {needed}; install git {needed} or later, or put a newer one first on PATH"
+    )]
     GitVersion { found: String, needed: String },
 
     #[error("not inside a git repository: {0}")]
