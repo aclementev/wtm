@@ -2,7 +2,7 @@
 
 pub mod repo;
 
-pub use repo::{RepoBuilder, TestRepo, count_entries};
+pub use repo::{RepoBuilder, TestRepo, count_entries, entries_in};
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,4 +14,11 @@ pub fn wait_until_trusted() {
     std::thread::sleep(Duration::from_nanos(
         2_000_000_000 - u64::from(now.subsec_nanos()),
     ));
+}
+
+/// Parses `wtm ls --json`.
+pub fn listing(repo: &TestRepo) -> Vec<serde_json::Value> {
+    let output = repo.wtm().args(["ls", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    serde_json::from_slice(&output.stdout).expect("ls --json prints JSON")
 }

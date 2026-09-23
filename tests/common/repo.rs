@@ -20,8 +20,6 @@ pub fn scratch(label: &str) -> PathBuf {
 pub struct RepoBuilder {
     label: String,
     files: usize,
-    ignored: Vec<(String, usize)>,
-    dirty: bool,
     symlink_to_dir: bool,
     submodule: bool,
 }
@@ -31,8 +29,6 @@ impl RepoBuilder {
         RepoBuilder {
             label: label.to_string(),
             files: 3,
-            ignored: Vec::new(),
-            dirty: false,
             symlink_to_dir: false,
             submodule: false,
         }
@@ -40,17 +36,6 @@ impl RepoBuilder {
 
     pub fn files(mut self, n: usize) -> RepoBuilder {
         self.files = n;
-        self
-    }
-
-    pub fn ignored(mut self, dir: &str, n: usize) -> RepoBuilder {
-        self.ignored.push((dir.to_string(), n));
-        self
-    }
-
-    /// Leaves one tracked file modified in the main worktree.
-    pub fn dirty_file(mut self) -> RepoBuilder {
-        self.dirty = true;
         self
     }
 
@@ -70,25 +55,12 @@ impl RepoBuilder {
     }
 
     pub fn build(self) -> TestRepo {
-        let root = scratch(&self.label);
-        let main = root.join("repo");
-        let data = root.join("data");
-        std::fs::create_dir_all(&main).unwrap();
-        std::fs::create_dir_all(&data).unwrap();
-
-        let repo = TestRepo { root, main, data };
+        let repo = TestRepo::empty(&self.label);
         repo.git(&["init", "-q", "-b", "main", "."]);
-        repo.git(&["config", "user.email", "test@example.com"]);
-        repo.git(&["config", "user.name", "Test"]);
+        repo.identify();
 
         for i in 0..self.files {
             repo.write(&format!("file{i}.txt"), &format!("contents of file {i}\n"));
-        }
-        for (dir, count) in &self.ignored {
-            repo.write(".gitignore", &format!("{dir}/\n"));
-            for i in 0..*count {
-                repo.write(&format!("{dir}/generated{i}"), "ignored\n");
-            }
         }
         if self.symlink_to_dir {
             repo.write("real/inside.txt", "behind a symlink\n");
@@ -99,10 +71,6 @@ impl RepoBuilder {
         }
         repo.git(&["add", "-A"]);
         repo.git(&["commit", "-q", "-m", "initial commit"]);
-
-        if self.dirty {
-            repo.write("file0.txt", "modified in the source\n");
-        }
         repo
     }
 }
@@ -114,6 +82,34 @@ pub struct TestRepo {
 }
 
 impl TestRepo {
+    /// A scratch root with an empty `repo` directory and a data root beside
+    /// it, for fixtures that make the repository themselves.
+    pub fn empty(label: &str) -> TestRepo {
+        let root = scratch(label);
+        let repo = TestRepo {
+            main: root.join("repo"),
+            data: root.join("data"),
+            root,
+        };
+        std::fs::create_dir_all(&repo.main).unwrap();
+        std::fs::create_dir_all(&repo.data).unwrap();
+        repo
+    }
+
+    /// A `git clone` of `origin`, so `origin/HEAD` and fetching are real.
+    pub fn clone_of(origin: &TestRepo, label: &str) -> TestRepo {
+        let repo = TestRepo::empty(label);
+        let url = origin.main.display().to_string();
+        repo.git(&["clone", "-q", &url, "."]);
+        repo.identify();
+        repo
+    }
+
+    fn identify(&self) {
+        self.git(&["config", "user.email", "test@example.com"]);
+        self.git(&["config", "user.name", "Test"]);
+    }
+
     pub fn write(&self, relative: &str, contents: &str) {
         let path = self.main.join(relative);
         if let Some(parent) = path.parent() {
@@ -124,11 +120,10 @@ impl TestRepo {
 
     /// Writes a file in the main worktree with the executable bit set, which
     /// `wtm` requires of an init hook.
-    pub fn executable(&self, relative: &str, script: &str) -> PathBuf {
+    pub fn executable(&self, relative: &str, script: &str) {
         self.write(relative, script);
         let path = self.main.join(relative);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
     }
 
     /// Runs git with the same scrubbed environment as the binary, so oracle
@@ -194,21 +189,12 @@ impl TestRepo {
         ]);
     }
 
-    /// A `wtm` invocation isolated from the developer's own home directory, so
-    /// no real configuration file can influence a test.
-    ///
-    /// Background reaping is off. `wtm rm` spawns a reaper for the entry it
-    /// has just made, so anything asserting what is in the trash would
-    /// otherwise be racing it. Tests that want a real reaper say so.
-    pub fn wtm(&self) -> assert_cmd::Command {
-        let mut command = self.wtm_reaping();
-        command.env("WTM_NO_REAPER", "1");
-        command
-    }
-
-    /// As `wtm`, but background reapers are left switched on.
-    pub fn wtm_reaping(&self) -> assert_cmd::Command {
-        let mut command = assert_cmd::Command::cargo_bin("wtm").expect("build wtm");
+    /// `wtm` as a plain process, isolated from the developer's own home
+    /// directory so no real configuration can influence a test, with
+    /// background reapers left on. For tests that need to spawn it and hold
+    /// its pipes.
+    pub fn process(&self) -> Command {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin("wtm"));
         command
             .current_dir(&self.main)
             .env("HOME", &self.root)
@@ -220,15 +206,56 @@ impl TestRepo {
         command
     }
 
-    pub fn trash(&self, repo_id: &str) -> PathBuf {
-        self.data.join(repo_id).join(".trash")
+    /// As `process`, with background reaping off. `wtm rm` spawns a reaper
+    /// for the entry it has just made, so anything asserting what is in the
+    /// trash would otherwise be racing it.
+    pub fn wtm(&self) -> assert_cmd::Command {
+        let mut command = self.wtm_reaping();
+        command.env("WTM_NO_REAPER", "1");
+        command
+    }
+
+    pub fn wtm_reaping(&self) -> assert_cmd::Command {
+        assert_cmd::Command::from_std(self.process())
+    }
+
+    /// Runs `wtm new` with `args` and returns the path it printed, which is
+    /// the only thing on its stdout.
+    pub fn new_worktree(&self, args: &[&str]) -> PathBuf {
+        let output = self.wtm().arg("new").args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "wtm new {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        PathBuf::from(String::from_utf8(output.stdout).unwrap().trim_end())
+    }
+
+    /// The repo id `wtm` computes, read back from the tool rather than
+    /// recomputed, for tests that plant entries in a trash before any
+    /// worktree exists.
+    pub fn repo_id(&self) -> String {
+        let output = self.wtm().args(["doctor", "--json"]).output().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        json["repo"]["id"].as_str().unwrap().to_string()
+    }
+
+    pub fn trash(&self) -> PathBuf {
+        self.data.join(self.repo_id()).join(".trash")
+    }
+
+    /// Whether `wtm new` would clone here, asked of `wtm` itself.
+    pub fn clones(&self) -> bool {
+        let output = self.wtm().args(["doctor", "--json"]).output().unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        json["method"]["method"] == "cow"
     }
 
     /// Fills the trash with entries that no worktree ever occupied. A sweep
     /// cannot tell the difference, and this is far cheaper than creating and
     /// removing that many worktrees.
-    pub fn plant_trash(&self, repo_id: &str, entries: usize, files: usize) {
-        let trash = self.trash(repo_id);
+    pub fn plant_trash(&self, entries: usize, files: usize) {
+        let trash = self.trash();
         for entry in 0..entries {
             for file in 0..files {
                 let dir = trash
@@ -245,16 +272,8 @@ impl TestRepo {
             .contains(&path.display().to_string())
     }
 
-    pub fn worktree_path(&self, repo_id: &str, name: &str) -> PathBuf {
-        self.data.join(repo_id).join(name)
-    }
-
-    /// The repo id `wtm` computes for this repository, read back from the tool
-    /// rather than recomputed, so tests never duplicate the formula.
-    pub fn repo_id(&self) -> String {
-        let output = self.wtm().args(["doctor", "--json"]).output().unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        json["repo"]["id"].as_str().unwrap().to_string()
+    pub fn branch_exists(&self, branch: &str) -> bool {
+        !self.git(&["branch", "--list", branch]).is_empty()
     }
 }
 
@@ -269,6 +288,14 @@ pub fn count_entries(path: &Path) -> usize {
         .flatten()
         .map(|e| count_entries(&e.path()))
         .sum::<usize>()
+}
+
+/// The entries directly in a trash, none when it does not exist.
+pub fn entries_in(trash: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(trash) else {
+        return Vec::new();
+    };
+    entries.flatten().map(|entry| entry.path()).collect()
 }
 
 impl Drop for TestRepo {

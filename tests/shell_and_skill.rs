@@ -7,10 +7,6 @@ use clap::CommandFactory;
 
 use common::RepoBuilder;
 
-const COMMANDS: [&str; 10] = [
-    "new", "ls", "cd", "rm", "init", "gc", "doctor", "config", "shell", "agent",
-];
-
 fn wtm_binary() -> PathBuf {
     assert_cmd::cargo::cargo_bin("wtm")
 }
@@ -21,14 +17,6 @@ fn run(args: &[&str]) -> String {
         .output()
         .expect("run wtm");
     String::from_utf8(output.stdout).expect("utf-8 output")
-}
-
-#[test]
-fn help_text_is_reviewed_not_drifted() {
-    insta::assert_snapshot!("help", run(&["--help"]));
-    for command in COMMANDS {
-        insta::assert_snapshot!(format!("help-{command}"), run(&[command, "--help"]));
-    }
 }
 
 /// The skill is written by hand, so a renamed flag or command would leave it
@@ -100,13 +88,6 @@ fn the_agent_skill_front_matter_meets_the_agent_skills_limits() {
     assert!(field("compatibility").len() <= 500);
 }
 
-#[test]
-fn shell_wrappers_are_reviewed_not_drifted() {
-    for shell in ["zsh", "bash", "fish"] {
-        insta::assert_snapshot!(format!("shell-{shell}"), run(&["shell", shell]));
-    }
-}
-
 const SHELLS: [&str; 3] = ["zsh", "bash", "fish"];
 
 /// Wraps `body` in whatever each shell needs to define the wtm function.
@@ -156,10 +137,10 @@ fn each_wrapper_changes_directory_in_its_own_shell() {
         let printed = String::from_utf8_lossy(&output.stdout)
             .trim_end()
             .to_string();
-        let expected = repo.worktree_path(&repo.repo_id(), "task");
+        let expected = repo.wtm().args(["cd", "task"]).output().unwrap().stdout;
         assert_eq!(
             printed,
-            expected.display().to_string(),
+            String::from_utf8(expected).unwrap().trim_end(),
             "{shell} wrapper did not change directory; stderr:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );

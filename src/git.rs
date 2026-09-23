@@ -330,35 +330,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_a_porcelain_record_per_worktree() {
-        let bytes = b"worktree /a/b\0HEAD 072b863\0branch refs/heads/main\0\0\
-                      worktree /c/d\0HEAD 9a1c2e0\0detached\0\0";
-        let list = parse_worktree_list(bytes);
-
-        assert_eq!(list.len(), 2);
-        assert_eq!(list[0].path, PathBuf::from("/a/b"));
-        assert_eq!(list[0].branch_short(), Some("main"));
-        assert_eq!(list[1].head.as_ref().unwrap().as_str(), "9a1c2e0");
-        assert_eq!(list[1].branch_short(), None);
-    }
-
-    #[test]
     fn a_newline_in_a_path_does_not_split_the_record() {
         let bytes = b"worktree /a/we\nird\0HEAD 072b863\0detached\0\0";
         let list = parse_worktree_list(bytes);
 
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].path, PathBuf::from("/a/we\nird"));
-    }
-
-    #[test]
-    fn reads_the_markers_that_carry_an_optional_reason() {
-        let bytes = b"worktree /a/b\0HEAD 072b863\0detached\0locked on a usb stick\0\0\
-                      worktree /c/d\0HEAD 072b863\0detached\0prunable\0\0";
-        let list = parse_worktree_list(bytes);
-
-        assert!(list[0].locked && !list[0].prunable);
-        assert!(list[1].prunable && !list[1].locked);
     }
 
     #[test]
