@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -114,6 +115,23 @@ pub struct TestRepo {
 }
 
 impl TestRepo {
+    /// The environment of every process a test starts, git and `wtm` alike,
+    /// so the fixture and the tool under test read the same configuration
+    /// and none of it is the developer's. A home inside the scratch root
+    /// keeps out `~/.gitconfig` and the user's `wtm` config, and
+    /// `GIT_CONFIG_NOSYSTEM` keeps out the machine-wide gitconfig. Either can
+    /// hold a setting an older git rejects, such as `merge.conflictStyle =
+    /// zdiff3` before 2.35, which fails every checkout.
+    pub fn env(&self) -> Vec<(&'static str, OsString)> {
+        vec![
+            ("HOME", self.root.clone().into()),
+            ("XDG_CONFIG_HOME", self.root.join("config").into()),
+            ("XDG_DATA_HOME", self.root.join("share").into()),
+            ("WTM_DIR", self.data.clone().into()),
+            ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        ]
+    }
+
     pub fn write(&self, relative: &str, contents: &str) {
         let path = self.main.join(relative);
         if let Some(parent) = path.parent() {
@@ -135,7 +153,7 @@ impl TestRepo {
     /// and subject always see the same repository.
     pub fn git_in(&self, cwd: &Path, args: &[&str]) -> String {
         let mut command = Command::new("git");
-        command.arg("-C").arg(cwd).args(args);
+        command.arg("-C").arg(cwd).args(args).envs(self.env());
         for key in [
             "GIT_DIR",
             "GIT_WORK_TREE",
@@ -194,8 +212,7 @@ impl TestRepo {
         ]);
     }
 
-    /// A `wtm` invocation isolated from the developer's own home directory, so
-    /// no real configuration file can influence a test.
+    /// A `wtm` invocation in the environment of [`TestRepo::env`].
     ///
     /// Background reaping is off. `wtm rm` spawns a reaper for the entry it
     /// has just made, so anything asserting what is in the trash would
@@ -211,10 +228,7 @@ impl TestRepo {
         let mut command = assert_cmd::Command::cargo_bin("wtm").expect("build wtm");
         command
             .current_dir(&self.main)
-            .env("HOME", &self.root)
-            .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("XDG_DATA_HOME", self.root.join("share"))
-            .env("WTM_DIR", &self.data)
+            .envs(self.env())
             .env_remove("WTM_DEBUG")
             .env_remove("WTM_NO_REAPER");
         command

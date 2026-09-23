@@ -129,10 +129,7 @@ fn in_shell(
         .arg(script)
         .current_dir(&repo.main)
         .env("PATH", path_with_wtm())
-        .env("HOME", &repo.root)
-        .env("XDG_CONFIG_HOME", repo.root.join("config"))
-        .env("XDG_DATA_HOME", repo.root.join("share"))
-        .env("WTM_DIR", &repo.data)
+        .envs(repo.env())
         .output()
         .expect("run the shell")
 }

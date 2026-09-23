@@ -139,7 +139,11 @@ fn new_refuses_a_repository_that_is_mid_rebase_and_names_the_operation() {
 
     // A conflicting rebase stops and leaves the in-progress markers behind.
     let mut rebase = std::process::Command::new("git");
-    rebase.arg("-C").arg(&repo.main).args(["rebase", "main"]);
+    rebase
+        .arg("-C")
+        .arg(&repo.main)
+        .args(["rebase", "main"])
+        .envs(repo.env());
     assert!(!rebase.output().unwrap().status.success());
 
     repo.wtm()
