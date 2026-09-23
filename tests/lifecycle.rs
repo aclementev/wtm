@@ -1,7 +1,7 @@
 mod common;
 
 use common::RepoBuilder;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn new_prints_one_absolute_path_and_git_knows_the_worktree() {
@@ -325,4 +325,43 @@ fn worktrees_made_before_the_repository_moved_are_still_managed() {
     // succeeds because `rm` repairs the link before asking git anything.
     wtm(&["rm", "before"]).assert().success();
     wtm(&["ls"]).assert().success().stdout("");
+}
+
+/// Every path under `root`, relative to it, except inside `skip`.
+fn paths_under(root: &Path, skip: &[&Path]) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if skip.contains(&path.as_path()) {
+                continue;
+            }
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(path.clone());
+            }
+            found.push(path.strip_prefix(root).unwrap().to_path_buf());
+        }
+    }
+    found.sort();
+    found
+}
+
+/// wtm stores nothing. After a whole lifecycle the home directory, which
+/// holds every XDG directory in these tests, is exactly as it was, and the
+/// data root is empty again.
+#[test]
+fn a_full_lifecycle_leaves_no_state_behind() {
+    let repo = RepoBuilder::new("lifecycle-zero").build();
+    let skip = [repo.main.as_path(), repo.data.as_path()];
+    let before = paths_under(&repo.root, &skip);
+
+    repo.wtm().args(["new", "task"]).assert().success();
+    repo.wtm().args(["init", "task"]).assert().success();
+    repo.wtm().arg("ls").assert().success();
+    repo.wtm().args(["rm", "task"]).assert().success();
+    repo.wtm().args(["gc", "--wait"]).assert().success();
+
+    assert_eq!(paths_under(&repo.root, &skip), before);
+    assert_eq!(paths_under(&repo.data, &[]), Vec::<PathBuf>::new());
 }
