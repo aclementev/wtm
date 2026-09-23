@@ -254,28 +254,29 @@ fn create(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) ->
     std::fs::create_dir_all(&parent).map_err(|e| Error::io(&parent, e))?;
 
     let cloner = clone::platform_cloner();
-    // Before anything is made, so `--clone-mode cow` where cloning is
-    // impossible costs nothing and leaves nothing to undo.
-    let decision = clone::decide(
+    // Before the worktree is registered, so `--clone-mode cow` where cloning
+    // is impossible costs nothing.
+    let result = clone::decide(
         git,
         request.clone_mode,
         (!ws.repo.bare).then_some(ws.repo.main.as_path()),
         &parent,
         cloner.as_ref(),
-    )?;
-    if decision.surprising {
-        ui.warn(&decision.reason);
-    } else {
-        ui.progress(&decision.reason);
-    }
-
-    match act(git, ui, ws, request, plan, decision.method, cloner.as_ref()) {
-        Ok(()) => Ok(decision.method),
-        Err(error) => {
-            undo(git, ui, ws, request, plan);
-            Err(error)
+    )
+    .and_then(|decision| {
+        if decision.surprising {
+            ui.warn(&decision.reason);
+        } else {
+            ui.progress(&decision.reason);
         }
+        act(git, ui, ws, request, plan, decision.method, cloner.as_ref())?;
+        Ok(decision.method)
+    });
+
+    if result.is_err() {
+        undo(git, ui, ws, &request.dest);
     }
+    result
 }
 
 fn act(
@@ -479,20 +480,21 @@ fn empty_submodules(git: &Git, dest: &Path) -> Result<()> {
 
 /// Removes what a failed creation left behind, so an immediate retry works.
 /// We report failures here, but they must not mask the original error.
-fn undo(git: &Git, ui: &Ui, ws: &Workspace, request: &Request, plan: &Plan) {
-    let dest = request.dest.to_string_lossy().into_owned();
-    if request.dest.exists() {
+///
+/// There is no branch to delete. Creating it is the last step that can
+/// fail, and a `checkout -b` that fails creates no branch.
+fn undo(git: &Git, ui: &Ui, ws: &Workspace, dest: &Path) {
+    if dest.exists() {
+        let arg = dest.to_string_lossy();
         let removed = git
-            .run(&ws.repo.main, &["worktree", "remove", "--force", &dest])
+            .run(&ws.repo.main, &["worktree", "remove", "--force", &arg])
             .is_ok();
-        if !removed && std::fs::remove_dir_all(&request.dest).is_err() {
-            ui.warn(format!("could not remove {dest}; remove it by hand"));
+        if !removed && std::fs::remove_dir_all(dest).is_err() {
+            ui.warn(format!("could not remove {arg}; remove it by hand"));
         }
     }
     let _ = git.run(&ws.repo.main, &["worktree", "prune"]);
-    if matches!(plan.branch, BranchAction::Create { .. }) {
-        let _ = git.run(&ws.repo.main, &["branch", "-D", &request.branch]);
-    }
+    ws.prune_empty_parents(dest);
 }
 
 #[cfg(test)]

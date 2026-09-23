@@ -56,7 +56,7 @@ src/
     fake.rs       test double (plain copy, records calls)
   index.rs        `HashAlgo`, `Entry`, the parser, and the in-place stat fill
   hook.rs         `Hook` (what resolution came to), the one stat, `HookEnv`, execution
-  create.rs       `wtm new` orchestration; `Rollback` guard
+  create.rs       `wtm new` orchestration; `undo` after a failure
   remove.rs       `wtm rm`; rename to trash; synchronous delete
   reaper.rs       detach (setsid, fds, priorities) and `sweep(roots)` with flock
   shell.rs        wrapper text per shell
@@ -315,9 +315,9 @@ pub fn check(req: &Request, obs: &Observed) -> Result<Plan>;                  //
 pub fn run(git: &Git, ui: &Ui, ws: &Workspace, config: &Config, name: WorktreeName,
            options: &Options) -> Result<()>;
 
-/// Undo list for a failed creation. Each step that makes something pushes a
-/// closure; `disarm()` on success. Drop runs the closures in reverse.
-struct Rollback { steps: Vec<Box<dyn FnOnce()>>, armed: bool }
+/// Removes what a failed creation left: the worktree, git's record of it,
+/// and the directories above it left empty. The same whatever step failed.
+fn undo(git: &Git, ui: &Ui, ws: &Workspace, dest: &Path);
 
 pub struct Options { pub force: bool, pub wait: bool,
                      pub delete_branch: bool, pub force_delete_branch: bool }

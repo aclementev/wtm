@@ -70,7 +70,7 @@ pub fn remove(
     };
 
     ui.relay(&git.run(&workspace.repo.main, &["worktree", "prune"])?);
-    prune_empty_parents(&path, &workspace.repo_dir());
+    workspace.prune_empty_parents(&path);
 
     if trashed {
         reaper::spawn_detached_reaper(&workspace.trash())?;
@@ -162,19 +162,6 @@ fn branch_flag(options: &Options) -> Option<&'static str> {
         (true, _) => Some("-D"),
         (_, true) => Some("-d"),
         _ => None,
-    }
-}
-
-/// A name like `feat/login` leaves an empty `feat` behind once the worktree is
-/// gone. `remove_dir` only succeeds on an empty directory, which is exactly
-/// the condition for pruning one.
-fn prune_empty_parents(path: &Path, stop: &Path) {
-    let mut current = path.parent();
-    while let Some(dir) = current {
-        if dir == stop || std::fs::remove_dir(dir).is_err() {
-            break;
-        }
-        current = dir.parent();
     }
 }
 
