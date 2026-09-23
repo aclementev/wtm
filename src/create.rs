@@ -51,7 +51,7 @@ pub fn run(
 
     ui.emit(request.dest.display().to_string());
 
-    // Outside the rollback guard and after the path is printed, because a
+    // Outside `undo` and after the path is printed, because a
     // hook that fails still leaves a usable worktree behind.
     match &plan.hook {
         None => Ok(()),
@@ -245,7 +245,10 @@ pub fn check(request: &Request, observed: &Observed) -> Result<Plan> {
         return Err(Error::InProgress(operation));
     }
     if let Some(path) = &observed.occupied {
-        return Err(Error::usage(format!("{} already exists", path.display())));
+        return Err(Error::usage(format!(
+            "{} already exists; choose another name",
+            path.display()
+        )));
     }
 
     let branch = match &observed.branch {
@@ -377,7 +380,7 @@ fn act(
         }
         BranchAction::Reuse => {
             ui.warn(format!(
-                "checking out the existing branch {}; --base is ignored",
+                "checking out the existing branch {}; --base is ignored. Pass --branch to start a new one",
                 request.branch
             ));
             ui.relay(&git.run(&request.dest, &["checkout", "-q", &request.branch])?);

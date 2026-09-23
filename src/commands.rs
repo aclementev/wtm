@@ -154,7 +154,7 @@ pub fn init(
     let inspected = hook::inspect(config.init.value.clone(), config.init.origin.clone());
     let Some(path) = inspected.path()? else {
         ui.warn(format!(
-            "no init hook at {}; nothing to run",
+            "no init hook at {}; nothing to run. Pass --init to name one",
             config.init.value.display()
         ));
         return Ok(0);
