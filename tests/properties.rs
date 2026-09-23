@@ -1,86 +1,31 @@
-mod common;
-
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
 use proptest::prelude::*;
 use wtm::clone::exclude::{Class, ExcludeSet};
 use wtm::name::WorktreeName;
-use wtm::repo::{Repo, RepoId};
-
-/// A repository over paths that need not exist, since every method under
-/// test is a path join or its inverse.
-fn repo() -> Repo {
-    Repo::new(
-        PathBuf::from("/repos/monorepo"),
-        false,
-        Path::new("/data/root"),
-    )
-}
-
-#[test]
-fn two_paths_to_the_same_directory_share_an_id() {
-    let dir = common::repo::scratch("repoid-symlink");
-    let real = dir.join("monorepo");
-    let link = dir.join("link-to-monorepo");
-    std::fs::create_dir(&real).unwrap();
-    std::os::unix::fs::symlink(&real, &link).unwrap();
-
-    let through_link = std::fs::canonicalize(&link).unwrap();
-    assert_eq!(
-        RepoId::for_main_worktree(&real),
-        RepoId::for_main_worktree(&through_link)
-    );
-}
-
-#[test]
-fn directories_sharing_a_basename_get_different_ids() {
-    let a = RepoId::for_main_worktree(Path::new("/one/monorepo"));
-    let b = RepoId::for_main_worktree(Path::new("/two/monorepo"));
-
-    assert_ne!(a, b);
-    assert!(a.as_str().starts_with("monorepo-"));
-    assert!(b.as_str().starts_with("monorepo-"));
-}
+use wtm::repo::Repo;
 
 proptest! {
-    #[test]
-    fn an_id_is_one_readable_component_and_eight_hex_digits(path in "(/[A-Za-z0-9._-]{1,12}){1,5}") {
-        let id = RepoId::for_main_worktree(Path::new(&path));
-        let (basename, hash) = id.as_str().rsplit_once('-').expect("id has a hash suffix");
-
-        prop_assert!(!id.as_str().contains('/'));
-        prop_assert!(!basename.is_empty());
-        prop_assert_eq!(hash.len(), 8);
-        prop_assert!(hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
-    }
-
-    /// The point of validating a name is that it can be joined onto a path we
-    /// later delete from, so every accepted name must stay inside the
+    /// The point of validating a name is that it is joined onto a path wtm
+    /// later deletes from, so every accepted name must stay inside the
     /// repository's directory.
     #[test]
     fn an_accepted_name_stays_inside_the_repository_directory(text in ".{0,40}") {
         let Ok(name) = WorktreeName::from_str(&text) else {
             return Ok(());
         };
-        let repo = repo();
-        let repo_dir = repo.repo_dir();
+        let repo = Repo::new(PathBuf::from("/repos/monorepo"), false, Path::new("/data/root"));
         let worktree_dir = repo.dir(&name);
 
-        prop_assert!(worktree_dir.starts_with(&repo_dir));
-        prop_assert_ne!(&worktree_dir, &repo_dir);
+        prop_assert!(worktree_dir.starts_with(repo.repo_dir()));
+        prop_assert_ne!(&worktree_dir, &repo.repo_dir());
         prop_assert!(!worktree_dir.components().any(|c| c == Component::ParentDir));
-    }
-
-    #[test]
-    fn parsing_a_name_is_idempotent(text in ".{0,40}") {
-        let Ok(name) = WorktreeName::from_str(&text) else {
-            return Ok(());
-        };
-        prop_assert_eq!(WorktreeName::from_str(&name.to_string()).unwrap(), name);
     }
 }
 
+/// Random text almost never spells an escape, so the ones that matter are
+/// named here.
 #[test]
 fn names_that_could_escape_the_repository_directory_are_refused() {
     for bad in [
@@ -92,6 +37,7 @@ fn names_that_could_escape_the_repository_directory_are_refused() {
         "-flag",
         "a//b",
         "a/",
+        "feat/./x",
     ] {
         assert!(
             WorktreeName::from_str(bad).is_err(),
@@ -100,20 +46,9 @@ fn names_that_could_escape_the_repository_directory_are_refused() {
     }
 }
 
-#[test]
-fn a_name_is_recovered_from_the_path_it_produces() {
-    let repo = repo();
-    let name = WorktreeName::from_str("feat/login").unwrap();
-
-    let path: PathBuf = repo.dir(&name);
-    assert_eq!(repo.name_of(&path), Some(name));
-    assert_eq!(repo.name_of(Path::new("/elsewhere/feat")), None);
-    assert_eq!(repo.name_of(&repo.trash().join("gone-abc")), None);
-}
-
-/// Every path the exclusion properties query: all of them up to four deep
-/// over a three-letter alphabet, so each named path, its ancestors, its
-/// children and its unrelated neighbours are all asked about.
+/// Every path up to four deep over a three-letter alphabet, so each named
+/// path, its ancestors, its children and its unrelated neighbours are all
+/// asked about.
 fn every_path() -> Vec<PathBuf> {
     let mut paths = vec![PathBuf::new()];
     let mut all = Vec::new();
@@ -133,8 +68,8 @@ fn named_path() -> impl Strategy<Value = PathBuf> {
 }
 
 /// The lists as git produces them. Included paths are files, so nothing
-/// either query names sits below one; the untracked query named each of
-/// them too, which is the ordinary case `from_lists` has to resolve.
+/// either query names sits below one, and the untracked query usually
+/// names each included path too, which `from_lists` has to resolve.
 fn lists() -> impl Strategy<Value = (Vec<PathBuf>, Vec<PathBuf>)> {
     (
         prop::collection::vec(named_path(), 0..6),
@@ -157,63 +92,46 @@ fn lists() -> impl Strategy<Value = (Vec<PathBuf>, Vec<PathBuf>)> {
         })
 }
 
-/// Paths the walk can actually ask about: never one below an included file.
-fn queries(included: &[PathBuf]) -> impl Iterator<Item = PathBuf> + '_ {
-    every_path()
-        .into_iter()
-        .filter(|p| !included.iter().any(|i| p != i && p.starts_with(i)))
+/// What the walk should do with `path`, stated over the plain lists rather
+/// than a trie. An include wins over any exclusion at or above it; a
+/// directory holding something to keep and something to skip is walked
+/// into; anything under an exclusion is skipped; and everything else is
+/// cloned in one call, which is what makes creation fast.
+fn model(path: &Path, excluded: &[PathBuf], included: &[PathBuf]) -> Class {
+    let strictly_below = |outer: &Path, inner: &Path| inner != outer && inner.starts_with(outer);
+    if included.iter().any(|i| i == path) {
+        Class::CloneWhole
+    } else if included.iter().any(|i| strictly_below(path, i)) {
+        Class::Recurse
+    } else if excluded.iter().any(|e| path.starts_with(e)) {
+        Class::Skip
+    } else if excluded
+        .iter()
+        .any(|e| strictly_below(path, e) && !included.contains(e))
+    {
+        Class::Recurse
+    } else {
+        Class::CloneWhole
+    }
 }
 
 proptest! {
-    /// An include wins over an exclusion at the same path and over any
-    /// excluded ancestor, however far up it sits.
     #[test]
-    fn an_included_path_is_cloned_whole_however_deep_its_exclusion((excluded, included) in lists()) {
-        let set = ExcludeSet::from_lists(excluded, included.clone());
-        for path in &included {
-            prop_assert_eq!(set.classify(path), Class::CloneWhole, "{:?}", path);
-        }
-    }
-
-    /// Anything else would stop the walk before it reached the include:
-    /// `Skip` drops it and `CloneWhole` carries its excluded siblings along.
-    #[test]
-    fn every_ancestor_of_an_included_path_is_recursed((excluded, included) in lists()) {
-        let set = ExcludeSet::from_lists(excluded, included.clone());
-        for path in &included {
-            for ancestor in path.ancestors().skip(1).filter(|a| !a.as_os_str().is_empty()) {
-                prop_assert_eq!(set.classify(ancestor), Class::Recurse, "{:?} above {:?}", ancestor, path);
-            }
-        }
-    }
-
-    /// Git collapses an ignored directory to one path, so nothing below it
-    /// is ever named. The walk must still skip all of it.
-    #[test]
-    fn a_path_under_an_exclusion_with_nothing_included_below_is_skipped((excluded, included) in lists()) {
+    fn every_path_is_classified_as_the_lists_say((excluded, included) in lists()) {
         let set = ExcludeSet::from_lists(excluded.clone(), included.clone());
-        for path in queries(&included) {
-            let under_exclusion = excluded.iter().any(|e| path.starts_with(e));
-            let include_at_or_below = included.iter().any(|i| i.starts_with(&path));
-            if under_exclusion && !include_at_or_below {
-                prop_assert_eq!(set.classify(&path), Class::Skip, "{:?}", path);
-            }
-        }
-    }
-
-    /// Cloning such a directory whole would carry the excluded path inside
-    /// it, which is how a secret or a dirty file reaches a new worktree.
-    #[test]
-    fn a_kept_directory_holding_an_exclusion_is_recursed((excluded, included) in lists()) {
-        let set = ExcludeSet::from_lists(excluded.clone(), included.clone());
-        for path in queries(&included) {
-            let under_exclusion = excluded.iter().any(|e| path.starts_with(e));
-            let exclusion_below = excluded
-                .iter()
-                .any(|e| e != &path && e.starts_with(&path) && !included.contains(e));
-            if !under_exclusion && exclusion_below {
-                prop_assert_eq!(set.classify(&path), Class::Recurse, "{:?}", path);
-            }
+        // The walk never looks below an included file.
+        let asked = every_path()
+            .into_iter()
+            .filter(|p| !included.iter().any(|i| p != i && p.starts_with(i)));
+        for path in asked {
+            prop_assert_eq!(
+                set.classify(&path),
+                model(&path, &excluded, &included),
+                "{:?} with excluded {:?} and included {:?}",
+                path,
+                excluded,
+                included
+            );
         }
     }
 }

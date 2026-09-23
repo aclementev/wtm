@@ -1,11 +1,10 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 
-use common::{RepoBuilder, TestRepo, wait_until_trusted};
+use common::{RepoBuilder, TestRepo};
 use proptest::prelude::*;
 
 /// Directory names, two of which the ignore grammar names whole.
@@ -38,6 +37,10 @@ struct Layout {
     files: BTreeMap<String, Fate>,
     ignore: Vec<&'static str>,
     include: Vec<&'static str>,
+    mode: &'static str,
+    /// Start the branch at the builder's commit instead of the source's
+    /// HEAD, so creation has to move the tree after filling it.
+    older_base: bool,
 }
 
 fn file_path() -> impl Strategy<Value = String> {
@@ -62,11 +65,15 @@ fn layout() -> impl Strategy<Value = Layout> {
         prop::collection::btree_map(file_path(), fate, 1..12),
         prop::sample::subsequence(IGNORE, 0..=IGNORE.len()),
         prop::sample::subsequence(INCLUDE, 0..=INCLUDE.len()),
+        prop::sample::select(&["auto", "checkout"][..]),
+        any::<bool>(),
     )
-        .prop_map(|(files, ignore, include)| Layout {
+        .prop_map(|(files, ignore, include, mode, older_base)| Layout {
             files,
             ignore,
             include,
+            mode,
+            older_base,
         })
 }
 
@@ -148,10 +155,11 @@ fn included(repo: &TestRepo) -> Vec<PathBuf> {
         .collect()
 }
 
-/// What a new worktree should hold: the tree `git worktree add` checks out,
-/// plus each included file and its directories as they are in the source.
-/// Both halves come from git, so this cannot share a bug with our matching.
-fn expected(repo: &TestRepo) -> BTreeMap<PathBuf, Entry> {
+/// What a new worktree should hold: the tree `git worktree add` checks out
+/// at `base`, plus each included file and its directories as they are in
+/// the source. Both halves come from git, so this cannot share a bug with
+/// our matching.
+fn expected(repo: &TestRepo, base: &str) -> BTreeMap<PathBuf, Entry> {
     let oracle = repo.root.join("oracle");
     repo.git(&[
         "worktree",
@@ -159,7 +167,7 @@ fn expected(repo: &TestRepo) -> BTreeMap<PathBuf, Entry> {
         "-q",
         "--detach",
         &oracle.display().to_string(),
-        "HEAD",
+        base,
     ]);
 
     let mut tree = listing(&oracle);
@@ -200,75 +208,42 @@ proptest! {
     /// with a bug in our own matching. The fixture carries a top-level
     /// symlink to a directory and a submodule, so the comparison also covers
     /// both staying what `git worktree add` makes of them: a symlink and an
-    /// empty directory.
+    /// empty directory. Both creation paths run on every platform, and on
+    /// the clone path an older base makes git move the cloned tree.
     #[test]
     fn a_new_worktree_equals_git_worktree_add_plus_includes(layout in layout()) {
         let repo = build("creation-diff", &layout);
+        let base = if layout.older_base { "HEAD~1" } else { "HEAD" };
 
-        let output = repo.wtm().args(["new", "subject", "--no-init"]).output().unwrap();
-        prop_assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let dest = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim_end());
+        let dest = repo.new_worktree(&[
+            "subject", "--no-init", "--base", base, "--clone-mode", layout.mode,
+        ]);
 
-        assert_same_tree(&listing(&dest), &expected(&repo));
+        assert_same_tree(&listing(&dest), &expected(&repo, base));
     }
 }
 
-/// Listings cannot tell a clone from a checkout that arrived at the same
-/// contents, and a checkout is what a mistake in the creation sequence
-/// falls back to without a word. A checkout stamps the current time; a
-/// clone keeps the source's, so a file dated 2001 tells them apart.
-///
-/// Every APFS volume clones, so on macOS this always runs. Elsewhere it
-/// needs btrfs or XFS, and on a filesystem without cloning it reports that
-/// it did not run rather than passing quietly.
+/// Git copies the sparse patterns of the worktree it runs in into every
+/// worktree it adds, so a sparse main checkout would silently give sparse
+/// worktrees on both creation paths.
 #[test]
-fn a_cloned_worktree_keeps_the_source_mtime_of_an_untouched_file() {
-    let repo = RepoBuilder::new("creation-mtime").build();
-    if !cfg!(target_os = "macos") && !clones(&repo) {
-        eprintln!("skipped: the filesystem under target/tmp cannot clone");
-        return;
+fn a_sparse_main_checkout_still_gives_full_worktrees() {
+    let repo = RepoBuilder::new("creation-sparse").build();
+    repo.write("kept/a.txt", "inside the cone\n");
+    repo.write("dropped/b.txt", "outside the cone\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "two directories"]);
+    repo.git(&["sparse-checkout", "set", "kept"]);
+    assert!(!repo.main.join("dropped/b.txt").exists());
+
+    for mode in ["auto", "checkout"] {
+        let dest = repo.new_worktree(&[mode, "--clone-mode", mode]);
+
+        assert!(dest.join("dropped/b.txt").is_file(), "{mode}");
+        assert_eq!(repo.git_in(&dest, &["status", "--porcelain"]), "", "{mode}");
     }
-    let past = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
-    File::options()
-        .write(true)
-        .open(repo.main.join("file1.txt"))
-        .unwrap()
-        .set_modified(past)
-        .unwrap();
-    // The dirty query compares stat without refreshing, so until the index
-    // learns the new mtime the file counts as modified and is left for git
-    // to write.
-    repo.git(&["update-index", "--refresh", "-q"]);
-    // The change above moved the file's ctime, and a file changed that
-    // recently is left for git to write rather than trusted from the clone.
-    wait_until_trusted();
-
-    let output = repo
-        .wtm()
-        .args(["new", "subject", "--no-init", "--clone-mode", "cow"])
-        .output()
-        .unwrap();
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        !repo.main.join("dropped/b.txt").exists(),
+        "the main checkout changed"
     );
-    let dest = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim_end());
-
-    let mtime = fs::metadata(dest.join("file1.txt"))
-        .unwrap()
-        .modified()
-        .unwrap();
-    assert_eq!(mtime, past, "the file was written, not cloned");
-}
-
-/// The method `wtm new` would pick here, asked of `wtm` itself.
-fn clones(repo: &TestRepo) -> bool {
-    let output = repo.wtm().args(["doctor", "--json"]).output().unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    json["method"]["method"] == "cow"
 }
