@@ -40,6 +40,19 @@ impl Workspace {
         self.repo_dir().join(TRASH)
     }
 
+    /// Removes the directories between `path` and the data root that are
+    /// left empty once the worktree at `path` is gone: `feat` for a name
+    /// like `feat/login`, and the repository's own directory, which would
+    /// otherwise read as orphaned. `remove_dir` only succeeds on an empty
+    /// directory, which is exactly the condition for removing one.
+    pub fn prune_empty_parents(&self, path: &Path) {
+        for dir in path.ancestors().skip(1) {
+            if dir == self.root || std::fs::remove_dir(dir).is_err() {
+                break;
+            }
+        }
+    }
+
     pub fn name_of(&self, path: &Path) -> Option<WorktreeName> {
         let rel = path.strip_prefix(self.repo_dir()).ok()?;
         if rel.starts_with(TRASH) {

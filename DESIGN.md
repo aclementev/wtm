@@ -381,9 +381,10 @@ the object store anyway. Either way the reset then touches only files that
 genuinely differ.
 
 If any step before the init hook fails, the destination directory and the
-git metadata are removed (`git worktree remove --force` after
-`git worktree unlock` if needed) and the branch is deleted if `wtm` created
-it. The failure message names the step.
+git metadata are removed (`git worktree remove --force`, then `git worktree
+prune`), and so are the directories creation made above it that are now
+empty. No branch needs deleting: creating it is the last step that can
+fail, and a `checkout -b` that fails creates none.
 
 ### 6.2 Method selection
 

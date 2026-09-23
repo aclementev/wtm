@@ -98,12 +98,12 @@ cleverness. Do not merge the two features.
 
 ## 6. Hardening and release
 
-Rollback with fault injection, the remaining preconditions and edge cases,
-warnings that name the override which would change the outcome, the CI
-matrix of macOS on APFS and Linux on both a reflink filesystem and ext4,
-the nightly performance guard, the README, and version 0.1.
+Rollback after a failed creation, the remaining preconditions and edge
+cases, warnings that name the override which would change the outcome, the
+CI matrix of macOS on APFS and Linux on both a reflink filesystem and ext4
+(with rustfmt and clippy), the README, and version 0.1.
 
-Done when: failure injected at each of the four named points leaves no
+Done when: a creation that fails with the tree fully populated leaves no
 directory, no git metadata and no stray branch, and an immediate retry
 works; the zero-state invariant test passes over a full lifecycle; all
 three CI jobs are green.

@@ -134,16 +134,15 @@ time, a clone does not.
   order when two rules both apply, and one per branch outcome. This set
   grows with every later feature, which is why it is kept pure.
 
-## 4. Fault injection for rollback
+## 4. Rollback
 
-An internal environment variable, `WTM_TEST_FAIL_AT=<step>` (compiled in
-only with `cfg(test)` or a `test-hooks` feature), makes `create` return an
-error at a named step: `after_worktree_add`, `during_walk`, `after_index`,
-`after_checkout`. For each step, assert afterwards: the destination does
-not exist, `git worktree list` does not mention it, `wtm`-created branches
-are gone, the data root gained no directories, and a second `wtm new` with the same
-name succeeds. This replaces mocking with real failures at
-real boundaries.
+The cleanup after a failed creation does the same thing wherever the
+failure happened, so one real failure at the last step that can fail, with
+the tree fully populated, covers it: an untracked file carried by
+`.worktreeinclude` that the base tracks makes git refuse the branch
+checkout. Assert afterwards that the data root is empty, git has no
+record or metadata of the worktree, no branch was left, and a retry with
+the file gone succeeds. No fault-injection switch is compiled in.
 
 Hook failure is a separate case: a hook that exits 7 must leave the
 worktree, print the path on stdout, name the exit code on stderr and return
