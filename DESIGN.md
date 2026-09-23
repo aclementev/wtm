@@ -535,8 +535,8 @@ the repository's configuration says, so none of those need handling.
    in measuring an entry, because every later offset shifts with it.
 3. For each entry, `lstat` the clone and the source file. Fill the entry
    from the clone only when the clone's file type matches the entry's
-   mode and both the source's ctime and the clone's mtime are whole
-   seconds older than `since`. Write ctime, mtime (seconds and
+   mode and both the source's ctime and the clone's mtime fall at least
+   one whole second before `since`'s second. Write ctime, mtime (seconds and
    nanoseconds), dev, ino, uid, gid and size, each truncated to 32 bits as
    git does. Keep the mode: `core.fileMode` may be false, and then the
    filesystem's executable bit is not the one git records. The `lstat`
@@ -559,7 +559,12 @@ an edit that restores the old mtime (`touch -r`, `rsync -t`, `cp -p`) still
 moves it. Without this check such an edit, landing between the query and
 the clone, is cloned with its new content and git reports it clean. The
 comparison is in whole seconds because a filesystem with coarse timestamps
-rounds a later change down. Requiring the clone's mtime to be older as well
+rounds a later change down, and it keeps a second's margin because the
+kernel stamps ctime from a clock that runs up to a tick behind the one
+`since` is read from: on Linux an edit 2 ms after `since` was measured with
+a ctime in the second before it. Files changed in the last second or two
+before `wtm new` are therefore left for git to hash, which costs nothing
+worth counting. Requiring the clone's mtime to be older as well
 keeps every filled entry out of git's racy window, since the index is
 written after `since`, so no entry needs smudging.
 
