@@ -90,7 +90,16 @@ proptest! {
 
 #[test]
 fn names_that_could_escape_the_repository_directory_are_refused() {
-    for bad in ["", "..", "../elsewhere", "feat/../../escape", "/absolute", "-flag", "a//b", "a/"] {
+    for bad in [
+        "",
+        "..",
+        "../elsewhere",
+        "feat/../../escape",
+        "/absolute",
+        "-flag",
+        "a//b",
+        "a/",
+    ] {
         assert!(
             WorktreeName::from_str(bad).is_err(),
             "{bad:?} should not parse"
@@ -142,8 +151,11 @@ fn lists() -> impl Strategy<Value = (Vec<PathBuf>, Vec<PathBuf>)> {
         .prop_map(|(mut excluded, included, also_untracked)| {
             let below_an_include =
                 |p: &PathBuf| included.iter().any(|i| p != i && p.starts_with(i));
-            let included: Vec<PathBuf> =
-                included.iter().filter(|p| !below_an_include(p)).cloned().collect();
+            let included: Vec<PathBuf> = included
+                .iter()
+                .filter(|p| !below_an_include(p))
+                .cloned()
+                .collect();
             excluded.retain(|p| !below_an_include(p));
             if also_untracked {
                 excluded.extend(included.iter().cloned());

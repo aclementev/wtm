@@ -14,7 +14,15 @@ const DIRS: &[&str] = &["a", "b", "build", "node_modules"];
 const NAMES: &[&str] = &["one.txt", "two.log", "three.env", "four.rs"];
 const IGNORE: &[&str] = &["*.log", "build/", "node_modules/", "*.env"];
 /// Exact file, directory with a trailing slash, `*.ext` and negation.
-const INCLUDE: &[&str] = &["a/one.txt", "*.env", "build/", "node_modules/", "*.log", "!*.log", "!b/"];
+const INCLUDE: &[&str] = &[
+    "a/one.txt",
+    "*.env",
+    "build/",
+    "node_modules/",
+    "*.log",
+    "!*.log",
+    "!b/",
+];
 
 #[derive(Clone, Copy, Debug)]
 enum Fate {
@@ -45,7 +53,11 @@ fn file_path() -> impl Strategy<Value = String> {
 }
 
 fn layout() -> impl Strategy<Value = Layout> {
-    let fate = prop_oneof![Just(Fate::Tracked), Just(Fate::Dirty), Just(Fate::Untracked)];
+    let fate = prop_oneof![
+        Just(Fate::Tracked),
+        Just(Fate::Dirty),
+        Just(Fate::Untracked)
+    ];
     (
         prop::collection::btree_map(file_path(), fate, 1..12),
         prop::sample::subsequence(IGNORE, 0..=IGNORE.len()),
@@ -64,10 +76,7 @@ fn layout() -> impl Strategy<Value = Layout> {
 /// directory the ignore patterns name. Git never collapses such a directory,
 /// and a walk that trusted the pattern would lose the file.
 fn build(label: &str, layout: &Layout) -> TestRepo {
-    let repo = RepoBuilder::new(label)
-        .symlink_to_dir()
-        .submodule()
-        .build();
+    let repo = RepoBuilder::new(label).symlink_to_dir().submodule().build();
 
     repo.write(".gitignore", &layout.ignore.join("\n"));
     repo.git(&["add", ".gitignore"]);
@@ -144,7 +153,14 @@ fn included(repo: &TestRepo) -> Vec<PathBuf> {
 /// Both halves come from git, so this cannot share a bug with our matching.
 fn expected(repo: &TestRepo) -> BTreeMap<PathBuf, Entry> {
     let oracle = repo.root.join("oracle");
-    repo.git(&["worktree", "add", "-q", "--detach", &oracle.display().to_string(), "HEAD"]);
+    repo.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        &oracle.display().to_string(),
+        "HEAD",
+    ]);
 
     let mut tree = listing(&oracle);
     let source = listing(&repo.main);
@@ -158,8 +174,14 @@ fn expected(repo: &TestRepo) -> BTreeMap<PathBuf, Entry> {
 
 /// Names each path that differs rather than printing two whole trees.
 fn assert_same_tree(actual: &BTreeMap<PathBuf, Entry>, expected: &BTreeMap<PathBuf, Entry>) {
-    let missing: Vec<_> = expected.keys().filter(|p| !actual.contains_key(*p)).collect();
-    let extra: Vec<_> = actual.keys().filter(|p| !expected.contains_key(*p)).collect();
+    let missing: Vec<_> = expected
+        .keys()
+        .filter(|p| !actual.contains_key(*p))
+        .collect();
+    let extra: Vec<_> = actual
+        .keys()
+        .filter(|p| !expected.contains_key(*p))
+        .collect();
     let differing: Vec<_> = expected
         .iter()
         .filter(|(p, e)| actual.get(*p).is_some_and(|a| a != *e))
@@ -233,7 +255,10 @@ fn a_cloned_worktree_keeps_the_source_mtime_of_an_untouched_file() {
     );
     let dest = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim_end());
 
-    let mtime = fs::metadata(dest.join("file1.txt")).unwrap().modified().unwrap();
+    let mtime = fs::metadata(dest.join("file1.txt"))
+        .unwrap()
+        .modified()
+        .unwrap();
     assert_eq!(mtime, past, "the file was written, not cloned");
 }
 

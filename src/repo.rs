@@ -69,7 +69,10 @@ impl Repo {
     /// subdirectory of either.
     pub fn discover(git: &Git, from: &Path) -> Result<Repo> {
         let common_dir = git
-            .stdout(from, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .stdout(
+                from,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
             .map_err(|_| Error::NotARepo(from.to_path_buf()))?;
 
         // The first record of `worktree list` is always the main worktree,
@@ -80,8 +83,7 @@ impl Repo {
             .into_iter()
             .next()
             .ok_or_else(|| Error::NotARepo(from.to_path_buf()))?;
-        let main =
-            std::fs::canonicalize(&first.path).map_err(|e| Error::io(&first.path, e))?;
+        let main = std::fs::canonicalize(&first.path).map_err(|e| Error::io(&first.path, e))?;
 
         Ok(Repo {
             id: RepoId::for_main_worktree(&main),
@@ -110,7 +112,8 @@ impl Repo {
                 return Some(candidate.to_string());
             }
         }
-        git.stdout(&self.main, &["symbolic-ref", "--short", "HEAD"]).ok()
+        git.stdout(&self.main, &["symbolic-ref", "--short", "HEAD"])
+            .ok()
     }
 }
 
@@ -171,4 +174,3 @@ pub fn created_at(worktree: &Path) -> Option<SystemTime> {
     let metadata = std::fs::metadata(worktree).ok()?;
     metadata.created().or_else(|_| metadata.modified()).ok()
 }
-

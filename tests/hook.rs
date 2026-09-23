@@ -6,7 +6,8 @@ use std::path::Path;
 
 /// Records what the hook was given, inside the worktree so a test can read it
 /// back once `wtm` has returned.
-const RECORD: &str = "#!/bin/sh\nenv | grep '^WTM_HOOK_' | sort > hook-env.txt\npwd > hook-pwd.txt\n";
+const RECORD: &str =
+    "#!/bin/sh\nenv | grep '^WTM_HOOK_' | sort > hook-env.txt\npwd > hook-pwd.txt\n";
 
 fn variables(worktree: &Path) -> Vec<(String, String)> {
     let text = std::fs::read_to_string(worktree.join("hook-env.txt")).expect("the hook ran");
@@ -73,8 +74,11 @@ fn the_hook_does_not_inherit_the_callers_git_variables() {
         .assert()
         .success();
 
-    let leaked = std::fs::read_to_string(repo.worktree_path(&repo.repo_id(), "task").join("git-env.txt"))
-        .expect("the hook ran");
+    let leaked = std::fs::read_to_string(
+        repo.worktree_path(&repo.repo_id(), "task")
+            .join("git-env.txt"),
+    )
+    .expect("the hook ran");
     assert!(leaked.trim().is_empty(), "the hook inherited {leaked:?}");
 }
 
@@ -101,7 +105,10 @@ fn a_failing_hook_keeps_a_usable_worktree_and_exits_three() {
     assert!(stderr.contains("wtm init task"), "the rerun hint: {stderr}");
 
     // The worktree is not a casualty. Git knows it, and it is checked out.
-    assert_eq!(repo.git_in(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]), "task");
+    assert_eq!(
+        repo.git_in(&worktree, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "task"
+    );
     assert!(worktree.join("file0.txt").is_file());
 
     repo.executable("wtm-init.sh", "#!/bin/sh\ntrue\n");
@@ -118,7 +125,11 @@ fn quiet_discards_the_hooks_output_but_not_its_failure() {
         "#!/bin/sh\necho chatter\necho chatter >&2\nexit 4\n",
     );
 
-    let output = repo.wtm().args(["--quiet", "new", "task"]).output().unwrap();
+    let output = repo
+        .wtm()
+        .args(["--quiet", "new", "task"])
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(3));
 
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -129,7 +140,10 @@ fn quiet_discards_the_hooks_output_but_not_its_failure() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(
         stdout,
-        format!("{}\n", repo.worktree_path(&repo.repo_id(), "task").display())
+        format!(
+            "{}\n",
+            repo.worktree_path(&repo.repo_id(), "task").display()
+        )
     );
 }
 
@@ -140,7 +154,10 @@ fn quiet_discards_the_hooks_output_but_not_its_failure() {
 fn a_hooks_outcome_is_never_written_down() {
     let repo = RepoBuilder::new("hook-stateless").build();
     let metadata = |name: &str| -> BTreeSet<String> {
-        let gitdir = repo.git_in(&repo.worktree_path(&repo.repo_id(), name), &["rev-parse", "--git-dir"]);
+        let gitdir = repo.git_in(
+            &repo.worktree_path(&repo.repo_id(), name),
+            &["rev-parse", "--git-dir"],
+        );
         std::fs::read_dir(&gitdir)
             .expect("the worktree has git metadata")
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
@@ -178,7 +195,10 @@ fn a_missing_default_hook_is_silent_but_a_configured_one_is_refused() {
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("setup-typo.sh"), "{stderr}");
     assert!(stderr.contains("does not exist"), "{stderr}");
-    assert!(stderr.contains("flag"), "the layer that set it is named: {stderr}");
+    assert!(
+        stderr.contains("flag"),
+        "the layer that set it is named: {stderr}"
+    );
     assert!(
         !repo.worktree_path(&repo.repo_id(), "typo").exists(),
         "a hook that could never run must not cost a worktree"
@@ -202,7 +222,10 @@ fn no_init_skips_a_hook_that_would_have_failed() {
     let repo = RepoBuilder::new("hook-skip").build();
     repo.executable("wtm-init.sh", "#!/bin/sh\nexit 9\n");
 
-    repo.wtm().args(["new", "task", "--no-init"]).assert().success();
+    repo.wtm()
+        .args(["new", "task", "--no-init"])
+        .assert()
+        .success();
 }
 
 #[test]
@@ -227,14 +250,27 @@ fn init_reruns_in_the_current_worktree_and_refuses_outside_one() {
     );
 
     repo.executable("wtm-init.sh", RECORD);
-    repo.wtm().current_dir(&worktree).arg("init").assert().success();
+    repo.wtm()
+        .current_dir(&worktree)
+        .arg("init")
+        .assert()
+        .success();
 
     let seen = variables(&worktree);
-    let value = |key: &str| seen.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).unwrap();
+    let value = |key: &str| {
+        seen.iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+            .unwrap()
+    };
     assert_eq!(value("WTM_HOOK_NAME"), "task");
     assert_eq!(value("WTM_HOOK_BRANCH"), "task");
     assert_eq!(value("WTM_HOOK_BASE_SHA"), repo.git(&["rev-parse", "HEAD"]));
-    assert_eq!(value("WTM_HOOK_METHOD"), "", "a rerun cannot know the method");
+    assert_eq!(
+        value("WTM_HOOK_METHOD"),
+        "",
+        "a rerun cannot know the method"
+    );
 
     let outside = repo.wtm().arg("init").output().unwrap();
     assert_eq!(outside.status.code(), Some(2));

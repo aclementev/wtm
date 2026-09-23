@@ -21,7 +21,10 @@ fn new_prints_one_absolute_path_and_git_knows_the_worktree() {
         listed.contains(&path.display().to_string()),
         "git does not know {path:?}:\n{listed}"
     );
-    assert_eq!(repo.git_in(path, &["rev-parse", "--abbrev-ref", "HEAD"]), "feat/login");
+    assert_eq!(
+        repo.git_in(path, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feat/login"
+    );
 }
 
 #[test]
@@ -57,7 +60,14 @@ fn ls_reports_the_worktree_with_branch_base_and_age() {
     assert!(line.starts_with("feat/login"), "{line}");
     assert!(line.contains(&head[..7]), "base commit missing from {line}");
     assert!(line.contains("<1m"), "age missing from {line}");
-    assert!(line.ends_with(&repo.worktree_path(&repo.repo_id(), "feat/login").display().to_string()));
+    assert!(
+        line.ends_with(
+            &repo
+                .worktree_path(&repo.repo_id(), "feat/login")
+                .display()
+                .to_string()
+        )
+    );
 }
 
 #[test]
@@ -89,7 +99,10 @@ fn rm_refuses_a_dirty_worktree_with_exit_four_and_force_removes_it() {
     repo.wtm().args(["rm", "task"]).assert().code(4);
     assert!(path.is_dir(), "a refused removal must leave the worktree");
 
-    repo.wtm().args(["rm", "task", "--force"]).assert().success();
+    repo.wtm()
+        .args(["rm", "task", "--force"])
+        .assert()
+        .success();
     assert!(!path.exists());
 }
 
@@ -182,7 +195,13 @@ fn a_bare_repository_supports_the_whole_lifecycle() {
     let bare = seed.root.join("bare.git");
     seed.git_in(
         &seed.root,
-        &["clone", "-q", "--bare", &seed.main.display().to_string(), &bare.display().to_string()],
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            &seed.main.display().to_string(),
+            &bare.display().to_string(),
+        ],
     );
 
     let wtm = |args: &[&str]| {
@@ -193,7 +212,10 @@ fn a_bare_repository_supports_the_whole_lifecycle() {
 
     let output = wtm(&["new", "task"]).output().unwrap();
     assert!(output.status.success());
-    let path = String::from_utf8(output.stdout).unwrap().trim_end().to_string();
+    let path = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim_end()
+        .to_string();
     assert!(Path::new(&path).is_dir());
 
     wtm(&["ls"])
@@ -222,13 +244,18 @@ fn rm_refuses_a_locked_worktree_and_force_removes_it() {
         .stderr(predicates::str::contains("is locked"));
     assert!(path.is_dir());
 
-    repo.wtm().args(["rm", "pinned", "--force"]).assert().success();
+    repo.wtm()
+        .args(["rm", "pinned", "--force"])
+        .assert()
+        .success();
     assert!(!path.exists());
     // `git worktree prune` leaves a locked worktree registered however long
     // its directory has been gone, so forcing one out has to unlock it first
     // or git is left holding a record of a path that no longer exists.
     assert!(
-        !repo.git(&["worktree", "list", "--porcelain"]).contains("pinned"),
+        !repo
+            .git(&["worktree", "list", "--porcelain"])
+            .contains("pinned"),
         "the forced removal left a registration git can never prune"
     );
 }

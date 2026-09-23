@@ -7,8 +7,8 @@ use serde_json::json;
 use crate::cli::CloneMode;
 use crate::clone;
 use crate::config::Config;
-use crate::exclude;
 use crate::error::{Error, Result};
+use crate::exclude;
 use crate::git::Git;
 use crate::hook::{self, HookEnv};
 use crate::name::WorktreeName;
@@ -51,7 +51,9 @@ fn row_of(view: &WorktreeView, now: SystemTime) -> Vec<String> {
     vec![
         view.name.to_string(),
         view.git.branch_short().unwrap_or("(detached)").to_string(),
-        view.base.as_ref().map_or("-".to_string(), |b| b.short().to_string()),
+        view.base
+            .as_ref()
+            .map_or("-".to_string(), |b| b.short().to_string()),
         age(view.created, now),
         status_of(&view.git).unwrap_or_default().to_string(),
         view.git.path.display().to_string(),
@@ -74,7 +76,13 @@ fn status_of(worktree: &crate::git::GitWorktree) -> Option<&'static str> {
 fn align(rows: &[Vec<String>]) -> Vec<String> {
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
-        .map(|i| rows.iter().filter_map(|r| r.get(i)).map(|c| c.chars().count()).max().unwrap_or(0))
+        .map(|i| {
+            rows.iter()
+                .filter_map(|r| r.get(i))
+                .map(|c| c.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
         .collect();
 
     rows.iter()
@@ -113,7 +121,9 @@ fn age(created: Option<SystemTime>, now: SystemTime) -> String {
 }
 
 fn unix_seconds(time: SystemTime) -> Option<u64> {
-    time.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs())
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 pub fn cd(ui: &Ui, workspace: &Workspace, name: Option<&str>) -> Result<i32> {
@@ -188,9 +198,9 @@ fn current_worktree(git: &Git, workspace: &Workspace) -> Result<WorktreeName> {
     let toplevel = git
         .toplevel(&cwd)
         .and_then(|path| std::fs::canonicalize(&path).map_err(|e| Error::io(path, e)))?;
-    workspace.name_of(&toplevel).ok_or_else(|| {
-        Error::usage("not inside a wtm worktree; name one with `wtm init <name>`")
-    })
+    workspace
+        .name_of(&toplevel)
+        .ok_or_else(|| Error::usage("not inside a wtm worktree; name one with `wtm init <name>`"))
 }
 
 /// Empties every trash under the data root and tidies what removal left
@@ -271,7 +281,9 @@ pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {
     if json {
         let object: serde_json::Map<_, _> = entries
             .into_iter()
-            .map(|(key, value, origin)| (key.to_string(), json!({ "value": value, "origin": origin })))
+            .map(|(key, value, origin)| {
+                (key.to_string(), json!({ "value": value, "origin": origin }))
+            })
             .collect();
         ui.emit(serde_json::to_string_pretty(&object).unwrap_or_default());
         return Ok(0);
@@ -308,9 +320,11 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
     let repo_dir = workspace.repo_dir();
     let probe_dir = clone::nearest_existing(&repo_dir).unwrap_or(root);
     let cloner = clone::platform_cloner();
-    let decision = clone::decide(git, CloneMode::Auto, source, &probe_dir, cloner.as_ref())?;
+    let decision = clone::decide(git, CloneMode::Auto, source, probe_dir, cloner.as_ref())?;
     let sparse = source.is_some_and(|source| clone::is_sparse(git, source));
-    let submodules = source.map_or(0, |source| git.gitlinks(source).map_or(0, |list| list.len()));
+    let submodules = source.map_or(0, |source| {
+        git.gitlinks(source).map_or(0, |list| list.len())
+    });
     let include = source.map(|source| {
         let file = exclude::include_file(source);
         let matches = exclude::included_paths(git, source).map_or(0, |paths| paths.len());
@@ -376,5 +390,3 @@ fn describe_volumes(repo: Option<u64>, root: Option<u64>, same: Option<bool>) ->
         _ => "unknown; the data root does not exist yet".to_string(),
     }
 }
-
-

@@ -207,7 +207,9 @@ pub fn check(request: &Request, observed: &Observed) -> Result<Plan> {
     let hook = observed.hook.path()?.map(Path::to_path_buf);
 
     let Some(source_head) = observed.source_head.clone() else {
-        return Err(Error::usage("the main worktree has no commit to branch from"));
+        return Err(Error::usage(
+            "the main worktree has no commit to branch from",
+        ));
     };
     if let Some(operation) = observed.in_progress {
         return Err(Error::InProgress(operation));
@@ -568,10 +570,34 @@ mod tests {
 
     #[test]
     fn each_precondition_refuses_with_its_own_message() {
-        assert!(message(Observed { source_head: None, ..observed() }).contains("no commit"));
-        assert!(message(Observed { in_progress: Some("rebase"), ..observed() }).contains("rebase"));
-        assert!(message(Observed { dest_exists: true, ..observed() }).contains("already exists"));
-        assert!(message(Observed { base: None, ..observed() }).contains("origin/HEAD"));
+        assert!(
+            message(Observed {
+                source_head: None,
+                ..observed()
+            })
+            .contains("no commit")
+        );
+        assert!(
+            message(Observed {
+                in_progress: Some("rebase"),
+                ..observed()
+            })
+            .contains("rebase")
+        );
+        assert!(
+            message(Observed {
+                dest_exists: true,
+                ..observed()
+            })
+            .contains("already exists")
+        );
+        assert!(
+            message(Observed {
+                base: None,
+                ..observed()
+            })
+            .contains("origin/HEAD")
+        );
         assert!(
             message(Observed {
                 branch: BranchState::CheckedOut(PathBuf::from("/elsewhere/task")),
@@ -580,10 +606,16 @@ mod tests {
             .contains("/elsewhere/task")
         );
 
-        let hook = message(Observed { hook: unusable_hook("does not exist"), ..observed() });
+        let hook = message(Observed {
+            hook: unusable_hook("does not exist"),
+            ..observed()
+        });
         assert!(hook.contains("/repo/setup.sh"), "{hook}");
         assert!(hook.contains("does not exist"), "{hook}");
-        assert!(hook.contains("flag"), "the layer that set it is named: {hook}");
+        assert!(
+            hook.contains("flag"),
+            "the layer that set it is named: {hook}"
+        );
     }
 
     #[test]
@@ -614,5 +646,4 @@ mod tests {
         };
         assert!(message(both).contains("rebase"));
     }
-
 }
