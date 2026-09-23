@@ -200,6 +200,7 @@ fn make(
             start,
         ],
     )?;
+    unsparse(dest)?;
 
     if cow {
         clone::populate(ui, main, dest)?;
@@ -230,24 +231,35 @@ fn make(
     Ok("checked out")
 }
 
-/// Whether to clone, reporting why not when the answer is no.
+/// Whether to clone, reporting why not when the answer is no. A filesystem
+/// that cannot clone is ordinary, so the reason is progress, not a warning.
 fn use_clone(ui: &Ui, mode: CloneMode, source: Option<&Path>, parent: &Path) -> Result<bool> {
     if let CloneMode::Checkout = mode {
         return Ok(false);
     }
-    let Some(why) = clone::unavailable(source, parent) else {
+    let Some(reason) = clone::unavailable(source, parent) else {
         return Ok(true);
     };
-    match mode {
-        CloneMode::Cow => Err(Error::CloneUnsupported { reason: why.reason }),
-        _ if why.fixable => {
-            ui.warn(format!("checking out: {}", why.reason));
-            Ok(false)
-        }
-        _ => {
-            ui.progress(format!("checking out: {}", why.reason));
-            Ok(false)
-        }
+    if let CloneMode::Cow = mode {
+        return Err(Error::CloneUnsupported { reason });
+    }
+    ui.progress(format!("checking out: {reason}"));
+    Ok(false)
+}
+
+/// Git copies the sparse-checkout patterns of the worktree it runs in into
+/// every worktree it adds, and a new worktree has every tracked file.
+/// Without its pattern file git treats a worktree as full whatever
+/// `core.sparseCheckout` says, and the file is the new worktree's own, so
+/// removing it touches nothing the main worktree reads.
+fn unsparse(dest: &Path) -> Result<()> {
+    let Some(gitdir) = git::gitdir_of(dest) else {
+        return Ok(());
+    };
+    let patterns = gitdir.join("info/sparse-checkout");
+    match std::fs::remove_file(&patterns) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::io(&patterns, e)),
+        _ => Ok(()),
     }
 }
 
