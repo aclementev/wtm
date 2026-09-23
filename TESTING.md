@@ -157,13 +157,12 @@ exit code 3; `wtm init` with a fixed hook then exits 0.
 - `-d` on an unmerged branch: worktree removed, branch kept, message
   printed; `-D`: branch gone.
 - A trash that cannot be renamed into: the synchronous delete runs and the
-  command exits 0. Provoked without needing a second filesystem by leaving a
-  file where the `.trash` directory has to be created, which is a real
-  failure at the real boundary rather than an injected one.
-- The `EXDEV` case itself needs a second filesystem, which not every machine
-  has. `WTM_TEST_XDEV_DIR` names a directory on one; the test checks
-  `st_dev` really differs and reports that it did not run when the variable
-  is unset, rather than passing quietly. CI sets it.
+  command exits 0. Provoked by leaving a file where the `.trash` directory
+  has to be created, which is a real failure at the real boundary. Any
+  failed rename takes the same path, `EXDEV` included. `EXDEV` itself is
+  not tested: a worktree and its trash both live under `<root>/<repo-id>/`,
+  so it needs a mount inside the data root, and a data root on a second
+  filesystem does not produce one.
 - Zero-state invariant: after a full lifecycle (`new`, `init`, `ls`, `rm`,
   `gc`) on a scratch HOME, the only paths `wtm` created outside the data
   root and the repo are none. Assert by snapshotting the filesystem under
