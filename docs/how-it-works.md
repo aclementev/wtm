@@ -67,8 +67,11 @@ reflinks, bcachefs and recent ZFS do. ext4 and tmpfs don't.
 When cloning isn't possible, `wtm new` falls back to a regular checkout
 with one git worker per CPU core. That's slower but correct, and it says
 why on the way. It does the same for a bare repository, which has no files
-to clone, and for a sparse checkout, whose patterns a clone would copy.
-`wtm doctor` spells out which case you're in.
+to clone. `wtm doctor` spells out which case you're in.
+
+A sparse main checkout is fine. New worktrees get every tracked file
+either way, even though git on its own would copy the sparse patterns
+into them.
 
 ## Removing: rename now, delete later
 

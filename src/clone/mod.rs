@@ -35,54 +35,32 @@ compile_error!(
 use exclude::{Class, ExcludeSet};
 use index::HashAlgo;
 
-/// Why cloning cannot work here.
-pub struct Unavailable {
-    pub reason: String,
-    /// A condition the caller could fix, such as a sparse source, which is
-    /// worth a warning. A filesystem that cannot clone is ordinary and is
-    /// only reported as progress.
-    pub fixable: bool,
-}
-
-/// Whether cloning from `source` into `dest_parent` would fail, cheapest
-/// question first. `source` is `None` for a bare repository, which has no
-/// files to clone.
-pub fn unavailable(source: Option<&Path>, dest_parent: &Path) -> Option<Unavailable> {
-    let ordinary = |reason: String| {
-        Some(Unavailable {
-            reason,
-            fixable: false,
-        })
-    };
-
+/// Why cloning from `source` into `dest_parent` would fail, cheapest
+/// question first, or `None` when it would work. `source` is `None` for a
+/// bare repository, which has no files to clone.
+///
+/// A sparse source clones like any other. Its missing files are missing
+/// from the clone too, the index fill leaves their entries zeroed, and the
+/// reset writes them.
+pub fn unavailable(source: Option<&Path>, dest_parent: &Path) -> Option<String> {
     let Some(source) = source else {
-        return ordinary("the repository is bare and has no files to clone".to_string());
+        return Some("the repository is bare and has no files to clone".to_string());
     };
-    if is_sparse(source) {
-        return Some(Unavailable {
-            reason: format!(
-                "{} is a sparse checkout and a clone would inherit its patterns; \
-                 run `git sparse-checkout disable` there to clone instead",
-                source.display()
-            ),
-            fixable: true,
-        });
-    }
     match (device_of(source), device_of(dest_parent)) {
         (Some(a), Some(b)) if a != b => {
-            return ordinary(format!(
+            return Some(format!(
                 "{} and {} are on different filesystems; point --dir at the repository's volume to clone instead",
                 source.display(),
                 dest_parent.display()
             ));
         }
         (None, _) | (_, None) => {
-            return ordinary("could not stat the source or the data root".to_string());
+            return Some("could not stat the source or the data root".to_string());
         }
         _ => {}
     }
     if let Err(error) = probe(dest_parent) {
-        return ordinary(format!(
+        return Some(format!(
             "this filesystem does not support cloning ({error})"
         ));
     }
@@ -105,14 +83,6 @@ fn probe(dir: &Path) -> Result<()> {
     let _ = fs::remove_file(&src);
     let _ = fs::remove_file(&dst);
     cloned
-}
-
-/// A clone would inherit the source's sparse patterns, so a sparse source
-/// takes the checkout path.
-pub fn is_sparse(source: &Path) -> bool {
-    let enabled = git::stdout(source, &["config", "--get", "core.sparseCheckout"])
-        .is_ok_and(|value| value == "true");
-    enabled || git::gitdir_of(source).is_some_and(|dir| dir.join("info/sparse-checkout").exists())
 }
 
 /// The deepest ancestor of `path` that exists, `path` itself included.
