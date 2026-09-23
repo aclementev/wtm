@@ -126,8 +126,18 @@ fn every_key_takes_its_value_from_the_highest_layer_it_accepts() {
                 .then(|| (key.value)(Layer::Env).to_string());
             let env = |name: &str| (name == key.env).then(|| env_value.clone()).flatten();
 
-            write_layer(&project_file, &key, present.contains(&Layer::Project), Layer::Project);
-            write_layer(&global_file, &key, present.contains(&Layer::Global), Layer::Global);
+            write_layer(
+                &project_file,
+                &key,
+                present.contains(&Layer::Project),
+                Layer::Project,
+            );
+            write_layer(
+                &global_file,
+                &key,
+                present.contains(&Layer::Global),
+                Layer::Global,
+            );
 
             let config = config::load(
                 &flags,
@@ -155,7 +165,11 @@ fn every_key_takes_its_value_from_the_highest_layer_it_accepts() {
                 key.name
             );
             if expected_value != UNCHECKED {
-                assert_eq!(value, expected_value, "{} with layers {present:?}", key.name);
+                assert_eq!(
+                    value, expected_value,
+                    "{} with layers {present:?}",
+                    key.name
+                );
             }
         }
     }
@@ -184,7 +198,11 @@ fn write_layer(file: &Path, key: &Key, present: bool, layer: Layer) {
 fn a_project_cannot_set_a_personal_key() {
     let dir = common::repo::scratch("config-scope");
 
-    for key in ["dir = \"/elsewhere\"", "branch_prefix = \"theirs/\"", "fetch = true"] {
+    for key in [
+        "dir = \"/elsewhere\"",
+        "branch_prefix = \"theirs/\"",
+        "fetch = true",
+    ] {
         let file = dir.join("project.toml");
         std::fs::write(&file, format!("{key}\n")).unwrap();
 
@@ -197,7 +215,7 @@ fn a_project_cannot_set_a_personal_key() {
             &dir,
         )
         .expect_err("a personal key in a project file must fail")
-            .to_string();
+        .to_string();
 
         assert!(message.contains(&file.display().to_string()), "{message}");
         assert!(message.contains("personal setting"), "{message}");
@@ -219,7 +237,7 @@ fn an_unknown_key_is_rejected_naming_the_file_and_the_key() {
         &dir,
     )
     .expect_err("an unknown key must fail")
-        .to_string();
+    .to_string();
 
     assert!(message.contains(&file.display().to_string()), "{message}");
     assert!(message.contains("not_a_key"), "{message}");
@@ -256,7 +274,11 @@ fn a_relative_init_path_resolves_against_the_base_its_layer_implies() {
         }
         config::load(
             &flags,
-            &|name| (name == "WTM_INIT").then(|| env.map(str::to_string)).flatten(),
+            &|name| {
+                (name == "WTM_INIT")
+                    .then(|| env.map(str::to_string))
+                    .flatten()
+            },
             Some(&project_file),
             None,
             cwd,

@@ -1,7 +1,6 @@
 mod common;
 
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -304,6 +303,7 @@ fn creation_keeps_the_clone_with_and_without_the_fast_index() {
         assert!(output.status.success(), "{name}: {stderr}");
         assert!(stderr.contains(expected), "{name}: {stderr}");
 
+        use std::os::unix::ffi::OsStrExt;
         let dest = PathBuf::from(std::ffi::OsStr::from_bytes(output.stdout.trim_ascii_end()));
         assert_eq!(repo.git_in(&dest, &["status", "--porcelain"]), "", "{name}");
         assert_eq!(

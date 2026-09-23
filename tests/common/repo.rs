@@ -75,11 +75,7 @@ impl RepoBuilder {
         std::fs::create_dir_all(&main).unwrap();
         std::fs::create_dir_all(&data).unwrap();
 
-        let repo = TestRepo {
-            root,
-            main,
-            data,
-        };
+        let repo = TestRepo { root, main, data };
         repo.git(&["init", "-q", "-b", "main", "."]);
         repo.git(&["config", "user.email", "test@example.com"]);
         repo.git(&["config", "user.name", "Test"]);
@@ -154,7 +150,9 @@ impl TestRepo {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        String::from_utf8_lossy(&output.stdout).trim_end().to_string()
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string()
     }
 
     pub fn git(&self, args: &[&str]) -> String {
@@ -172,10 +170,27 @@ impl TestRepo {
         self.git_in(&origin, &["add", "-A"]);
         self.git_in(
             &origin,
-            &["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-q", "-m", "module"],
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-q",
+                "-m",
+                "module",
+            ],
         );
         let url = origin.display().to_string();
-        self.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", &url, path]);
+        self.git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            &url,
+            path,
+        ]);
     }
 
     /// A `wtm` invocation isolated from the developer's own home directory, so

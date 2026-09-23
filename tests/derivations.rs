@@ -17,9 +17,15 @@ fn json(output: Vec<u8>) -> serde_json::Value {
 #[test]
 fn creation_time_comes_from_gits_metadata_directory() {
     let repo = RepoBuilder::new("derive-created").build();
-    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     repo.wtm().args(["new", "task"]).assert().success();
-    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
 
     let listing = json(repo.wtm().args(["ls", "--json"]).output().unwrap().stdout);
     let created = listing[0]["created"].as_u64().expect("a creation time");
@@ -39,7 +45,10 @@ fn base_is_the_merge_base_with_the_default_branch_for_a_tag_or_a_raw_sha() {
     repo.git(&["commit", "-qam", "second"]);
 
     for (name, base) in [("from-tag", "v1"), ("from-sha", first.as_str())] {
-        repo.wtm().args(["new", name, "--base", base]).assert().success();
+        repo.wtm()
+            .args(["new", name, "--base", base])
+            .assert()
+            .success();
     }
 
     let listing = json(repo.wtm().args(["ls", "--json"]).output().unwrap().stdout);

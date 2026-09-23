@@ -144,7 +144,9 @@ impl Git {
 
     pub fn stdout(&self, cwd: &Path, args: &[&str]) -> Result<String> {
         let output = self.run(cwd, args)?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string())
     }
 
     /// True when git exits zero. For questions where failure is an answer
@@ -156,7 +158,15 @@ impl Git {
     }
 
     pub fn rev_parse(&self, cwd: &Path, rev: &str) -> Result<Oid> {
-        let out = self.stdout(cwd, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")])?;
+        let out = self.stdout(
+            cwd,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{rev}^{{commit}}"),
+            ],
+        )?;
         if out.is_empty() {
             return Err(Error::usage(format!("{rev} does not name a commit")));
         }
@@ -168,7 +178,9 @@ impl Git {
         if !output.status.success() {
             return None;
         }
-        let text = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+        let text = String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string();
         (!text.is_empty()).then_some(Oid(text))
     }
 
@@ -179,7 +191,12 @@ impl Git {
     pub fn branch_exists(&self, cwd: &Path, branch: &str) -> bool {
         self.succeeds(
             cwd,
-            &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
         )
     }
 
@@ -207,7 +224,9 @@ impl Git {
     /// The worktree root containing `cwd`: for a linked worktree that is
     /// the worktree itself, not the main one.
     pub fn toplevel(&self, cwd: &Path) -> Result<PathBuf> {
-        Ok(PathBuf::from(self.stdout(cwd, &["rev-parse", "--show-toplevel"])?))
+        Ok(PathBuf::from(
+            self.stdout(cwd, &["rev-parse", "--show-toplevel"])?,
+        ))
     }
 
     /// Git's metadata directory for a worktree. Git derives its name from the
@@ -215,9 +234,12 @@ impl Git {
     /// worktree named `feat` can live in `worktrees/feat1`. It must be read
     /// back like this, never built by joining the worktree name.
     pub fn gitdir_of(&self, worktree: &Path) -> Option<PathBuf> {
-        self.stdout(worktree, &["rev-parse", "--path-format=absolute", "--git-dir"])
-            .ok()
-            .map(PathBuf::from)
+        self.stdout(
+            worktree,
+            &["rev-parse", "--path-format=absolute", "--git-dir"],
+        )
+        .ok()
+        .map(PathBuf::from)
     }
 
     /// The operation blocking a worktree, if any, named as git names it. The

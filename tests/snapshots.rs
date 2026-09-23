@@ -14,7 +14,10 @@ fn wtm_binary() -> PathBuf {
 }
 
 fn run(args: &[&str]) -> String {
-    let output = Command::new(wtm_binary()).args(args).output().expect("run wtm");
+    let output = Command::new(wtm_binary())
+        .args(args)
+        .output()
+        .expect("run wtm");
     String::from_utf8(output.stdout).expect("utf-8 output")
 }
 
@@ -52,7 +55,11 @@ fn wrapper_script(shell: &str, body: &str) -> String {
     }
 }
 
-fn in_shell(shell: &std::path::Path, repo: &common::TestRepo, script: &str) -> std::process::Output {
+fn in_shell(
+    shell: &std::path::Path,
+    repo: &common::TestRepo,
+    script: &str,
+) -> std::process::Output {
     Command::new(shell)
         .arg("-c")
         .arg(script)
@@ -82,7 +89,9 @@ fn each_wrapper_changes_directory_in_its_own_shell() {
             &wrapper_script(shell, "wtm new task >/dev/null; pwd"),
         );
 
-        let printed = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+        let printed = String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string();
         let expected = repo.worktree_path(&repo.repo_id(), "task");
         assert_eq!(
             printed,
