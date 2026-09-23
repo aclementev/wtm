@@ -65,13 +65,21 @@ hash separates two repos with the same name (a fork beside the original, a
 second clone). The path is canonicalized (symlinks resolved) before hashing
 so `~/code/repo` and `/Users/me/code/repo` agree.
 
-The function computing this must carry the above as its doc comment,
-including the consequence: the id is one-way, so the repo a `<repo-id>`
-directory belongs to is recovered by reading the `.git` file of any
-worktree inside it, never by reversing the hash. Moving or renaming a repo
-therefore yields a new id, its old worktrees keep pointing at the old path,
-and `wtm ls --all` reports that directory as orphaned. Recovering a moved
-repo is `git worktree repair`'s job, not ours.
+The id only decides where new worktrees go. It is never used to decide
+which worktrees are ours (section 2.2), so moving or renaming a repo, which
+yields a new id, loses nothing: new worktrees go under the new id and the
+old ones stay where they are, still listed and managed.
+
+Git keeps the link from the repo to each worktree, which survives a move,
+and a link back from each worktree, which names the repo's old path and
+breaks. Every git command inside the worktree then fails until `git
+worktree repair` runs. `wtm` runs it on the worktree before `cd`, `init`
+and `rm` act on one; it rewrites only a broken link, so a moved repo heals
+without anyone asking.
+
+A repo that is deleted, rather than moved, takes git's records of its
+worktrees with it. Nothing can find those worktrees afterwards but a look
+at the data root, and removing them is `rm -rf`.
 
 ### 2.2 Everything is derived
 
@@ -82,8 +90,7 @@ fact that is not in it.
 | question | answered by |
 |---|---|
 | which worktrees exist, with branch and head | `git worktree list --porcelain` |
-| which of them are ours | their path is under the data root |
-| which repo a `<repo-id>` directory belongs to | the `gitdir:` line of the `.git` file in any worktree inside it, or `git rev-parse --git-common-dir` run there |
+| which of them are ours, and their names | their path is `<data root>/<any repo-id>/<name>`. `git worktree list` only reports this repo's worktrees, so the repo-id directory need not be the current one, and after a move it is not |
 | when a worktree was created | birth time (`st_birthtime`, `statx` `STATX_BTIME`) of the worktree directory, which git creates at `worktree add`. Where the filesystem has no birth time this falls back to mtime, which moves on any top-level write, so the age is unreliable there; every filesystem wtm targets has birth times |
 | what a worktree branched from | `git merge-base <head> <default branch>` |
 | which trash entries exist | `readdir` of `<root>/<repo-id>/.trash` |
@@ -222,13 +229,9 @@ status and path, each derived per section 2.2. Status is empty for a healthy
 worktree, `missing` when git reports it prunable (its directory is gone or
 its gitdir pointer is broken) and `locked` when it is locked; an all-empty
 column is not printed. There is no init-status column;
-nothing records it. `--all` walks the data root, resolves each `<repo-id>` directory to its
-repo through a worktree's `.git` file, and groups by repo, marking
-worktrees whose directory no longer exists as `missing` and `<repo-id>`
-directories whose repo is gone (or that hold no worktrees) as `orphaned`.
-A root other than the default is only visited when `--dir` or the config
-points at it. The source of truth is `git worktree list --porcelain` filtered to paths
-under the repo's data dir; age and base are derived per section 2.2.
+nothing records it. The source of truth is `git worktree list --porcelain`
+filtered to the worktrees that are ours (section 2.2); age and base are
+derived per section 2.2.
 
 ### 4.3 `wtm rm <name> [--force] [--wait] [-d|--delete-branch] [-D|--force-delete-branch]`
 
@@ -261,20 +264,13 @@ derivation `ls` uses (section 2.2). `WTM_HOOK_METHOD` is empty, since nothing
 records how the tree was first populated. When no hook resolves at all it
 says so and exits 0, rather than looking like it did something.
 
-### 4.6 `wtm gc [--wait] [--dir <path>] [--orphans]`
+### 4.6 `wtm gc [--wait]`
 
 Sweeps every `.trash` under the data root (section 8.4), runs
-`git worktree prune`, and removes empty `<repo-id>` directories.
-`--dir <path>` sweeps a non-default root. `--wait` runs the sweep in the
-foreground instead of spawning a reaper, and reports how many entries it
-deleted and how many it left to another sweep.
-
-`--orphans`, which deletes `<repo-id>` directories whose repository is gone,
-is the only thing here that would delete outside a `.trash`. It ships with
-`wtm ls --all`, which lists the same set without deleting anything, so that
-looking always comes before deleting. Pruning every repository under the
-root, rather than the current one, needs the same resolution from a
-`<repo-id>` directory back to its repository and arrives with them.
+`git worktree prune` for the current repo, and removes empty `<repo-id>`
+directories. The global `--dir` sweeps a non-default root. `--wait` runs
+the sweep in the foreground instead of spawning a reaper, and reports how
+many entries it deleted and how many it left to another sweep.
 
 ### 4.7 `wtm doctor [--json]`
 
@@ -330,9 +326,10 @@ In order, each failing with a specific message:
 4. The source worktree is not sparse (`core.sparseCheckout` false and no
    `info/sparse-checkout`). If it is, fall back to checkout with a warning;
    a clone would inherit the sparse patterns.
-5. The destination does not exist. A removed worktree never occupies one:
-   it is renamed under the trash with a suffix nothing asks for, so the name
-   is free the moment `wtm rm` returns.
+5. The name is free: no worktree of ours has it, whichever `<repo-id>`
+   directory it is in, and nothing exists at the destination. A removed
+   worktree never holds one: it is renamed under the trash with a suffix
+   nothing asks for, so the name is free the moment `wtm rm` returns.
 6. The branch rules of 4.1.
 7. Method selection (section 6.2) when `--clone-mode` is `auto` or `cow`.
 
@@ -789,7 +786,7 @@ next to them, so `--help` and the skill share one description per flag.
 
 - Two `wtm new` in one repo at the same time: git serializes
   `worktree add` with its own locks, and the loser of a race for the same
-  name fails at the destination-exists check. `wtm` takes no locks of its
+  name fails at the name-is-free check. `wtm` takes no locks of its
   own because it writes no shared files.
 - `wtm rm` while a hook or an agent is still running inside the worktree:
   the dirty check catches most cases; a clean tree with a live process is

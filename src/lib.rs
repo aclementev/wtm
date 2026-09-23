@@ -111,7 +111,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Command::Ls(args) => commands::ls(&git, &ui, &workspace, args.json.json),
-        Command::Cd(args) => commands::cd(&ui, &workspace, args.name.as_deref()),
+        Command::Cd(args) => commands::cd(&git, &ui, &workspace, args.name.as_deref()),
         Command::Rm(args) => {
             let options = remove::Options {
                 force: args.force,

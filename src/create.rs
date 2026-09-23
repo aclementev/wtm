@@ -6,7 +6,7 @@ use crate::clone::{self, Cloner, Method, Walker};
 use crate::config::{Config, Setting};
 use crate::error::{Error, Result};
 use crate::exclude::{self, ExcludeSet};
-use crate::git::{Git, Oid};
+use crate::git::{Git, GitWorktree, Oid};
 use crate::hook::{self, Hook, HookEnv};
 use crate::index::{self, HashAlgo};
 use crate::name::WorktreeName;
@@ -103,7 +103,8 @@ pub struct Observed {
     pub base: Option<Oid>,
     pub branch: BranchState,
     pub in_progress: Option<&'static str>,
-    pub dest_exists: bool,
+    /// Where the name is already in use, if it is.
+    pub occupied: Option<PathBuf>,
     pub hook: Hook,
 }
 
@@ -155,14 +156,15 @@ pub fn derive(
 
 pub fn observe(git: &Git, workspace: &Workspace, request: &Request) -> Result<Observed> {
     let main = &workspace.repo.main;
+    let worktrees = workspace.repo.worktrees(git)?;
     Ok(Observed {
         source_head: git.rev_parse(main, "HEAD").ok(),
         base: resolve_base(git, workspace, &request.base_spec),
-        branch: branch_state(git, workspace, &request.branch)?,
+        branch: branch_state(git, main, &worktrees, &request.branch),
         in_progress: git
             .gitdir_of(main)
             .and_then(|gitdir| Git::in_progress_operation(&gitdir)),
-        dest_exists: request.dest.exists(),
+        occupied: occupied(workspace, &worktrees, request),
         hook: match &request.hook {
             None => Hook::Skip,
             Some(init) => hook::inspect(init.value.clone(), init.origin.clone()),
@@ -170,19 +172,30 @@ pub fn observe(git: &Git, workspace: &Workspace, request: &Request) -> Result<Ob
     })
 }
 
-fn branch_state(git: &Git, workspace: &Workspace, branch: &str) -> Result<BranchState> {
-    if !git.branch_exists(&workspace.repo.main, branch) {
-        return Ok(BranchState::Absent);
+fn branch_state(git: &Git, main: &Path, worktrees: &[GitWorktree], branch: &str) -> BranchState {
+    if !git.branch_exists(main, branch) {
+        return BranchState::Absent;
     }
-    let holder = workspace
-        .repo
-        .worktrees(git)?
-        .into_iter()
-        .find(|w| w.branch_short() == Some(branch));
-    Ok(match holder {
-        Some(worktree) => BranchState::CheckedOut(worktree.path),
+    match worktrees.iter().find(|w| w.branch_short() == Some(branch)) {
+        Some(worktree) => BranchState::CheckedOut(worktree.path.clone()),
         None => BranchState::Free,
-    })
+    }
+}
+
+/// A worktree of ours already by this name, or anything at all at the
+/// destination. The two differ once the repository has moved: its id
+/// changed with its path, so the worktrees made before the move sit under
+/// the old id's directory and not at `dest`.
+fn occupied(
+    workspace: &Workspace,
+    worktrees: &[GitWorktree],
+    request: &Request,
+) -> Option<PathBuf> {
+    worktrees
+        .iter()
+        .find(|w| workspace.name_of(&w.path).as_ref() == Some(&request.name))
+        .map(|w| w.path.clone())
+        .or_else(|| request.dest.exists().then(|| request.dest.clone()))
 }
 
 /// `origin/HEAD` means "the remote default branch" and has to be resolved;
@@ -214,11 +227,8 @@ pub fn check(request: &Request, observed: &Observed) -> Result<Plan> {
     if let Some(operation) = observed.in_progress {
         return Err(Error::InProgress(operation));
     }
-    if observed.dest_exists {
-        return Err(Error::usage(format!(
-            "{} already exists",
-            request.dest.display()
-        )));
+    if let Some(path) = &observed.occupied {
+        return Err(Error::usage(format!("{} already exists", path.display())));
     }
 
     let branch = match &observed.branch {
@@ -524,7 +534,7 @@ mod tests {
             base: Some(Oid::from_hex("b".repeat(40))),
             branch: BranchState::Absent,
             in_progress: None,
-            dest_exists: false,
+            occupied: None,
             hook: Hook::Skip,
         }
     }
@@ -588,7 +598,7 @@ mod tests {
         );
         assert!(
             message(Observed {
-                dest_exists: true,
+                occupied: Some(PathBuf::from("/data/repo-1234abcd/task")),
                 ..observed()
             })
             .contains("already exists")
@@ -643,7 +653,7 @@ mod tests {
     fn the_preconditions_are_reported_in_the_specified_order() {
         let both = Observed {
             in_progress: Some("rebase"),
-            dest_exists: true,
+            occupied: Some(PathBuf::from("/data/repo-1234abcd/task")),
             ..observed()
         };
         assert!(message(both).contains("rebase"));

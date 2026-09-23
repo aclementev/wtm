@@ -126,16 +126,10 @@ fn unix_seconds(time: SystemTime) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-pub fn cd(ui: &Ui, workspace: &Workspace, name: Option<&str>) -> Result<i32> {
+pub fn cd(git: &Git, ui: &Ui, workspace: &Workspace, name: Option<&str>) -> Result<i32> {
     let path = match name {
         None => workspace.repo.main.clone(),
-        Some(name) => {
-            let path = workspace.dir(&WorktreeName::from_str(name)?);
-            if !path.is_dir() {
-                return Err(Error::usage(format!("no worktree named {name}")));
-            }
-            path
-        }
+        Some(name) => repo::find(git, ui, workspace, &WorktreeName::from_str(name)?)?.path,
     };
     ui.emit(path.display().to_string());
     Ok(0)
@@ -155,10 +149,7 @@ pub fn init(
         Some(name) => WorktreeName::from_str(name)?,
         None => current_worktree(git, workspace)?,
     };
-    let root = workspace.dir(&name);
-    if !root.is_dir() {
-        return Err(Error::usage(format!("no worktree named {name}")));
-    }
+    let worktree = repo::find(git, ui, workspace, &name)?;
 
     let inspected = hook::inspect(config.init.value.clone(), config.init.origin.clone());
     let Some(path) = inspected.path()? else {
@@ -170,14 +161,10 @@ pub fn init(
     };
 
     let repo = &workspace.repo;
-    let branch = repo
-        .worktrees(git)?
-        .into_iter()
-        .find(|w| w.path == root)
-        .and_then(|w| w.branch_short().map(str::to_string));
+    let root = worktree.path.clone();
     let env = HookEnv {
         name: name.to_string(),
-        branch: branch.unwrap_or_default(),
+        branch: worktree.branch_short().unwrap_or_default().to_string(),
         base_ref: config.base.value.clone(),
         base_sha: repo::base_of(git, repo, &root)
             .map(|oid| oid.to_string())
@@ -207,9 +194,9 @@ fn current_worktree(git: &Git, workspace: &Workspace) -> Result<WorktreeName> {
 /// behind. Without `--wait` the sweeping is handed to detached reapers, one
 /// per trash, which partition the entries between them through the locks.
 ///
-/// `git worktree prune` runs for the current repository only. Pruning every
-/// repository under the root means resolving a `<repo-id>` directory back to
-/// its repository, which arrives with `wtm ls --all`.
+/// `git worktree prune` runs for the current repository only. Another
+/// repository's records are pruned when wtm runs there, and a repository
+/// that was deleted took its records with it.
 pub fn gc(git: &Git, ui: &Ui, workspace: &Workspace, wait: bool) -> Result<i32> {
     let trashes = trash_dirs(workspace.root());
 
@@ -315,7 +302,7 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
     let source = (!repo.bare).then_some(repo.main.as_path());
     // The repository's directory under the data root does not exist until
     // the first worktree is made, and probing must not create it, because
-    // an empty one reads as orphaned. Its nearest existing ancestor is on
+    // doctor only looks. Its nearest existing ancestor is on
     // the same filesystem, which is all the probe needs.
     let repo_dir = workspace.repo_dir();
     let probe_dir = clone::nearest_existing(&repo_dir).unwrap_or(root);

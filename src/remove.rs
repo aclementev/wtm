@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::git::Git;
 use crate::name::WorktreeName;
 use crate::reaper;
+use crate::repo;
 use crate::ui::Ui;
 use crate::workspace::Workspace;
 
@@ -26,13 +27,8 @@ pub fn remove(
     name: &WorktreeName,
     options: &Options,
 ) -> Result<i32> {
-    let path = workspace.dir(name);
-    let worktree = workspace
-        .repo
-        .worktrees(git)?
-        .into_iter()
-        .find(|w| w.path == path)
-        .ok_or_else(|| Error::usage(format!("no worktree named {name}")))?;
+    let worktree = repo::find(git, ui, workspace, name)?;
+    let path = worktree.path.clone();
 
     refuse_if_inside(&path)?;
     if !options.force {

@@ -297,3 +297,31 @@ fn ls_reports_a_worktree_whose_directory_disappeared_as_missing() {
         .success()
         .stdout(predicates::str::contains("missing"));
 }
+
+/// Moving a repository changes its id, and with it where new worktrees go.
+/// The ones made before the move stay where they are and are still wtm's.
+#[test]
+fn worktrees_made_before_the_repository_moved_are_still_managed() {
+    let repo = RepoBuilder::new("lifecycle-moved").build();
+    repo.wtm().args(["new", "before"]).assert().success();
+    let moved = repo.root.join("moved");
+    std::fs::rename(&repo.main, &moved).unwrap();
+    let wtm = |args: &[&str]| {
+        let mut command = repo.wtm();
+        command.current_dir(&moved).args(args);
+        command
+    };
+
+    wtm(&["ls"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("before"));
+    wtm(&["new", "before", "--branch", "other"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("already exists"));
+    // The worktree's `.git` file still names the old path, so this only
+    // succeeds because `rm` repairs the link before asking git anything.
+    wtm(&["rm", "before"]).assert().success();
+    wtm(&["ls"]).assert().success().stdout("");
+}

@@ -10,8 +10,8 @@ const TRASH: &str = ".trash";
 /// root holding it.
 ///
 /// Invariant: `name_of` is the inverse of `dir`. That pair is how `wtm`
-/// answers "which worktrees are ours" without keeping a registry, so they
-/// live together here rather than as path joins anyone may reimplement.
+/// names its worktrees without keeping a registry, so they live together
+/// here rather than as path joins anyone may reimplement.
 pub struct Workspace {
     pub repo: Repo,
     root: PathBuf,
@@ -22,8 +22,8 @@ impl Workspace {
         Workspace { repo, root }
     }
 
-    /// The data root, shared by every repository. Only `ls --all` and `gc`,
-    /// which range over repositories, have any use for it.
+    /// The data root, shared by every repository. Only `gc`, which sweeps
+    /// every repository's trash, has any use for it.
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -43,7 +43,7 @@ impl Workspace {
     /// Removes the directories between `path` and the data root that are
     /// left empty once the worktree at `path` is gone: `feat` for a name
     /// like `feat/login`, and the repository's own directory, which would
-    /// otherwise read as orphaned. `remove_dir` only succeeds on an empty
+    /// otherwise sit there empty. `remove_dir` only succeeds on an empty
     /// directory, which is exactly the condition for removing one.
     pub fn prune_empty_parents(&self, path: &Path) {
         for dir in path.ancestors().skip(1) {
@@ -53,12 +53,23 @@ impl Workspace {
         }
     }
 
+    /// The name of a worktree of this repository, or `None` when wtm did not
+    /// make it. Ours means under the data root, in any repository's
+    /// directory, not only the one `repo_dir` names today.
+    ///
+    /// `path` comes from this repository's own `git worktree list`, so
+    /// anything under the root is this repository's whatever directory it
+    /// sits in. And the directory does change: the id is computed from where
+    /// the repository is, so moving it gives a new one, and the worktrees
+    /// made before the move stay under the old.
     pub fn name_of(&self, path: &Path) -> Option<WorktreeName> {
-        let rel = path.strip_prefix(self.repo_dir()).ok()?;
-        if rel.starts_with(TRASH) {
+        let mut parts = path.strip_prefix(&self.root).ok()?.components();
+        parts.next()?;
+        let name = parts.as_path();
+        if name.starts_with(TRASH) {
             return None;
         }
-        WorktreeName::from_str(rel.to_str()?).ok()
+        WorktreeName::from_str(name.to_str()?).ok()
     }
 }
 
