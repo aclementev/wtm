@@ -54,7 +54,6 @@ pub struct GitWorktree {
     pub path: PathBuf,
     pub head: Option<Oid>,
     pub branch: Option<String>,
-    pub detached: bool,
     /// The repository itself, when it has no working tree.
     pub bare: bool,
     /// `git worktree lock`: the user has asked that nothing remove this,
@@ -82,178 +81,187 @@ pub struct GitVersion {
     pub raw: String,
 }
 
-/// Every git invocation in `wtm` goes through here. Nothing else spawns git.
-pub struct Git {
-    version: GitVersion,
+/// Checks that git is new enough and returns its version, which `doctor`
+/// reports. Every git invocation in `wtm` goes through this module; nothing
+/// else spawns git.
+pub fn check_version() -> Result<GitVersion> {
+    let version = parse_version(&stdout(Path::new("."), &["--version"])?)?;
+    if (version.major, version.minor) < MIN_VERSION {
+        return Err(Error::GitVersion {
+            found: version.raw,
+            needed: format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1),
+        });
+    }
+    Ok(version)
 }
 
-impl Git {
-    pub fn new() -> Result<Git> {
-        // The version is not known until git has answered, so the one call
-        // that asks goes through a `Git` that does not know it yet.
-        let mut git = Git {
-            version: GitVersion::default(),
-        };
-        let version = parse_version(&git.stdout(Path::new("."), &["--version"])?)?;
-        if (version.major, version.minor) < MIN_VERSION {
-            return Err(Error::GitVersion {
-                found: version.raw,
-                needed: format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1),
-            });
-        }
-        git.version = version;
-        Ok(git)
+/// Stdout is always captured, never inherited. It is the one stream
+/// `wtm` keeps clear of anything but its own result.
+fn command(cwd: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(cwd).args(args);
+    cmd.stdin(Stdio::null());
+    for key in SCRUBBED {
+        cmd.env_remove(key);
     }
+    cmd
+}
 
-    pub fn version(&self) -> &GitVersion {
-        &self.version
+/// Runs git, failing on a non-zero exit status. Stderr comes back in the
+/// `Output` for the caller to relay; it is never written directly.
+pub fn run(cwd: &Path, args: &[&str]) -> Result<Output> {
+    let output = command(cwd, args)
+        .output()
+        .map_err(|e| Error::io("git", e))?;
+    if !output.status.success() {
+        return Err(Error::Git {
+            args: args.iter().map(|a| a.to_string()).collect(),
+            status: output.status.code().unwrap_or(-1),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
     }
+    Ok(output)
+}
 
-    /// Stdout is always captured, never inherited. It is the one stream
-    /// `wtm` keeps clear of anything but its own result.
-    fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(cwd).args(args);
-        cmd.stdin(Stdio::null());
-        for key in SCRUBBED {
-            cmd.env_remove(key);
-        }
-        cmd
+/// Runs git with its stderr on ours, for the steps slow enough that a person
+/// should see git's progress. Stdout still goes nowhere near ours. Under
+/// `quiet` this is `run` with the output dropped, so a failure still carries
+/// git's message.
+pub fn stream(cwd: &Path, args: &[&str], quiet: bool) -> Result<()> {
+    if quiet {
+        return run(cwd, args).map(|_| ());
     }
+    let status = command(cwd, args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| Error::io("git", e))?;
+    if !status.success() {
+        return Err(Error::Git {
+            args: args.iter().map(|a| a.to_string()).collect(),
+            status: status.code().unwrap_or(-1),
+            stderr: "see git's message above".to_string(),
+        });
+    }
+    Ok(())
+}
 
-    /// Runs git, failing on a non-zero exit status. Stderr comes back in the
-    /// `Output` for the caller to relay; it is never written directly.
-    pub fn run(&self, cwd: &Path, args: &[&str]) -> Result<Output> {
-        let output = self
-            .command(cwd, args)
-            .output()
-            .map_err(|e| Error::io("git", e))?;
-        if !output.status.success() {
-            return Err(Error::Git {
-                args: args.iter().map(|a| a.to_string()).collect(),
-                status: output.status.code().unwrap_or(-1),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            });
-        }
-        Ok(output)
-    }
+pub fn stdout(cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = run(cwd, args)?;
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
+}
 
-    pub fn stdout(&self, cwd: &Path, args: &[&str]) -> Result<String> {
-        let output = self.run(cwd, args)?;
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .trim_end()
-            .to_string())
-    }
+/// True when git exits zero. For questions where failure is an answer
+/// rather than an error, such as whether a ref exists.
+pub fn succeeds(cwd: &Path, args: &[&str]) -> bool {
+    command(cwd, args)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
 
-    /// True when git exits zero. For questions where failure is an answer
-    /// rather than an error, such as whether a ref exists.
-    pub fn succeeds(&self, cwd: &Path, args: &[&str]) -> bool {
-        self.command(cwd, args)
-            .output()
-            .is_ok_and(|o| o.status.success())
+pub fn rev_parse(cwd: &Path, rev: &str) -> Result<Oid> {
+    let out = stdout(
+        cwd,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )?;
+    if out.is_empty() {
+        return Err(Error::usage(format!("{rev} does not name a commit")));
     }
+    Ok(Oid(out))
+}
 
-    pub fn rev_parse(&self, cwd: &Path, rev: &str) -> Result<Oid> {
-        let out = self.stdout(
-            cwd,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("{rev}^{{commit}}"),
-            ],
-        )?;
-        if out.is_empty() {
-            return Err(Error::usage(format!("{rev} does not name a commit")));
-        }
-        Ok(Oid(out))
+pub fn merge_base(cwd: &Path, a: &str, b: &str) -> Option<Oid> {
+    let output = command(cwd, &["merge-base", a, b]).output().ok()?;
+    if !output.status.success() {
+        return None;
     }
+    let text = String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string();
+    (!text.is_empty()).then_some(Oid(text))
+}
 
-    pub fn merge_base(&self, cwd: &Path, a: &str, b: &str) -> Option<Oid> {
-        let output = self.command(cwd, &["merge-base", a, b]).output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&output.stdout)
-            .trim_end()
-            .to_string();
-        (!text.is_empty()).then_some(Oid(text))
-    }
+pub fn status_is_clean(cwd: &Path) -> Result<bool> {
+    Ok(stdout(cwd, &["status", "--porcelain"])?.is_empty())
+}
 
-    pub fn status_is_clean(&self, cwd: &Path) -> Result<bool> {
-        Ok(self.stdout(cwd, &["status", "--porcelain"])?.is_empty())
-    }
+pub fn branch_exists(cwd: &Path, branch: &str) -> bool {
+    succeeds(
+        cwd,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+}
 
-    pub fn branch_exists(&self, cwd: &Path, branch: &str) -> bool {
-        self.succeeds(
-            cwd,
-            &[
-                "show-ref",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-    }
+/// The gitlink entries of the index, one per submodule. Mode 160000 is
+/// what makes an entry a submodule rather than a file.
+pub fn gitlinks(cwd: &Path) -> Result<Vec<PathBuf>> {
+    let output = run(cwd, &["ls-files", "-z", "--stage"])?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|record| {
+            // "<mode> <oid> <stage>\t<path>"
+            let rest = record.strip_prefix(b"160000 ")?;
+            let tab = rest.iter().position(|byte| *byte == b'\t')?;
+            Some(PathBuf::from(OsStr::from_bytes(&rest[tab + 1..])))
+        })
+        .collect())
+}
 
-    /// The gitlink entries of the index, one per submodule. Mode 160000 is
-    /// what makes an entry a submodule rather than a file.
-    pub fn gitlinks(&self, cwd: &Path) -> Result<Vec<PathBuf>> {
-        let output = self.run(cwd, &["ls-files", "-z", "--stage"])?;
-        Ok(output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter_map(|record| {
-                // "<mode> <oid> <stage>\t<path>"
-                let rest = record.strip_prefix(b"160000 ")?;
-                let tab = rest.iter().position(|byte| *byte == b'\t')?;
-                Some(PathBuf::from(OsStr::from_bytes(&rest[tab + 1..])))
-            })
-            .collect())
-    }
+pub fn worktrees(cwd: &Path) -> Result<Vec<GitWorktree>> {
+    let output = run(cwd, &["worktree", "list", "--porcelain", "-z"])?;
+    Ok(parse_worktree_list(&output.stdout))
+}
 
-    pub fn worktrees(&self, cwd: &Path) -> Result<Vec<GitWorktree>> {
-        let output = self.run(cwd, &["worktree", "list", "--porcelain", "-z"])?;
-        Ok(parse_worktree_list(&output.stdout))
-    }
+/// The worktree root containing `cwd`: for a linked worktree that is
+/// the worktree itself, not the main one.
+pub fn toplevel(cwd: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(stdout(
+        cwd,
+        &["rev-parse", "--show-toplevel"],
+    )?))
+}
 
-    /// The worktree root containing `cwd`: for a linked worktree that is
-    /// the worktree itself, not the main one.
-    pub fn toplevel(&self, cwd: &Path) -> Result<PathBuf> {
-        Ok(PathBuf::from(
-            self.stdout(cwd, &["rev-parse", "--show-toplevel"])?,
-        ))
-    }
+/// Git's metadata directory for a worktree. Git derives its name from the
+/// basename of the worktree path and appends a digit on collision, so a
+/// worktree named `feat` can live in `worktrees/feat1`. It must be read
+/// back like this, never built by joining the worktree name.
+pub fn gitdir_of(worktree: &Path) -> Option<PathBuf> {
+    stdout(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-dir"],
+    )
+    .ok()
+    .map(PathBuf::from)
+}
 
-    /// Git's metadata directory for a worktree. Git derives its name from the
-    /// basename of the worktree path and appends a digit on collision, so a
-    /// worktree named `feat` can live in `worktrees/feat1`. It must be read
-    /// back like this, never built by joining the worktree name.
-    pub fn gitdir_of(&self, worktree: &Path) -> Option<PathBuf> {
-        self.stdout(
-            worktree,
-            &["rev-parse", "--path-format=absolute", "--git-dir"],
-        )
-        .ok()
-        .map(PathBuf::from)
-    }
-
-    /// The operation blocking a worktree, if any, named as git names it. The
-    /// markers live in the worktree's own gitdir, not the common directory.
-    pub fn in_progress_operation(gitdir: &Path) -> Option<&'static str> {
-        const MARKERS: [(&str, &str); 6] = [
-            ("rebase-merge", "rebase"),
-            ("rebase-apply", "rebase"),
-            ("MERGE_HEAD", "merge"),
-            ("CHERRY_PICK_HEAD", "cherry-pick"),
-            ("REVERT_HEAD", "revert"),
-            ("BISECT_LOG", "bisect"),
-        ];
-        MARKERS
-            .iter()
-            .find(|(marker, _)| gitdir.join(marker).exists())
-            .map(|(_, name)| *name)
-    }
+/// The operation blocking a worktree, if any, named as git names it. The
+/// markers live in the worktree's own gitdir, not the common directory.
+pub fn in_progress_operation(gitdir: &Path) -> Option<&'static str> {
+    const MARKERS: [(&str, &str); 6] = [
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("MERGE_HEAD", "merge"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+        ("BISECT_LOG", "bisect"),
+    ];
+    MARKERS
+        .iter()
+        .find(|(marker, _)| gitdir.join(marker).exists())
+        .map(|(_, name)| *name)
 }
 
 fn parse_version(text: &str) -> Result<GitVersion> {
@@ -293,7 +301,6 @@ fn parse_worktree_list(bytes: &[u8]) -> Vec<GitWorktree> {
                     path: PathBuf::from(OsStr::from_bytes(value)),
                     head: None,
                     branch: None,
-                    detached: false,
                     bare: false,
                     locked: false,
                     prunable: false,
@@ -306,7 +313,6 @@ fn parse_worktree_list(bytes: &[u8]) -> Vec<GitWorktree> {
                 match key {
                     b"HEAD" => worktree.head = Some(Oid(text())),
                     b"branch" => worktree.branch = Some(text()),
-                    b"detached" => worktree.detached = true,
                     b"bare" => worktree.bare = true,
                     b"locked" => worktree.locked = true,
                     b"prunable" => worktree.prunable = true,
@@ -332,9 +338,8 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].path, PathBuf::from("/a/b"));
         assert_eq!(list[0].branch_short(), Some("main"));
-        assert!(!list[0].detached);
         assert_eq!(list[1].head.as_ref().unwrap().as_str(), "9a1c2e0");
-        assert!(list[1].detached);
+        assert_eq!(list[1].branch_short(), None);
     }
 
     #[test]

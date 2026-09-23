@@ -4,35 +4,47 @@ use std::time::SystemTime;
 
 use serde_json::json;
 
-use crate::cli::CloneMode;
 use crate::clone;
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::exclude;
-use crate::git::Git;
+use crate::git::{self, GitVersion, Oid};
 use crate::hook::{self, HookEnv};
 use crate::name::WorktreeName;
-use crate::reaper;
-use crate::repo::{self, WorktreeView};
+use crate::repo::{Repo, Worktree};
+use crate::trash;
 use crate::ui::Ui;
-use crate::workspace::Workspace;
 
-pub fn ls(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i32> {
+/// Lists this repository's worktrees with the two facts `wtm` derives rather
+/// than stores: what each one branched from and how old it is. Costs one
+/// `merge-base` per worktree.
+pub fn ls(ui: &Ui, repo: &Repo, json: bool) -> Result<i32> {
     let now = SystemTime::now();
-    let views = repo::view(git, workspace)?;
+    let default_branch = repo.default_branch();
+    let rows: Vec<(Worktree, Option<Oid>, Option<SystemTime>)> = repo
+        .worktrees()?
+        .into_iter()
+        .map(|w| {
+            let base = match (&w.head, &default_branch) {
+                (Some(head), Some(branch)) => git::merge_base(&repo.main, head.as_str(), branch),
+                _ => None,
+            };
+            let created = created_at(&w.path);
+            (w, base, created)
+        })
+        .collect();
 
     if json {
-        let entries: Vec<_> = views
+        let entries: Vec<_> = rows
             .iter()
-            .map(|v| {
+            .map(|(w, base, created)| {
                 json!({
-                    "name": v.name.as_str(),
-                    "branch": v.git.branch_short(),
-                    "base": v.base.as_ref().map(|b| b.as_str()),
-                    "head": v.git.head.as_ref().map(|h| h.as_str()),
-                    "created": v.created.and_then(unix_seconds),
-                    "path": v.git.path,
-                    "status": status_of(&v.git),
+                    "name": w.name.as_str(),
+                    "branch": w.branch,
+                    "base": base.as_ref().map(|b| b.as_str()),
+                    "head": w.head.as_ref().map(|h| h.as_str()),
+                    "created": created.and_then(unix_seconds),
+                    "path": w.path,
+                    "status": status_of(w),
                 })
             })
             .collect();
@@ -40,29 +52,41 @@ pub fn ls(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i32> 
         return Ok(0);
     }
 
-    let rows: Vec<Vec<String>> = views.iter().map(|v| row_of(v, now)).collect();
-    for line in align(&rows) {
+    let table: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(w, base, created)| {
+            vec![
+                w.name.to_string(),
+                w.branch.clone().unwrap_or_else(|| "(detached)".to_string()),
+                base.as_ref()
+                    .map_or("-".to_string(), |b| b.short().to_string()),
+                age(*created, now),
+                status_of(w).unwrap_or_default().to_string(),
+                w.path.display().to_string(),
+            ]
+        })
+        .collect();
+    for line in align(&table) {
         ui.emit(line);
     }
     Ok(0)
 }
 
-fn row_of(view: &WorktreeView, now: SystemTime) -> Vec<String> {
-    vec![
-        view.name.to_string(),
-        view.git.branch_short().unwrap_or("(detached)").to_string(),
-        view.base
-            .as_ref()
-            .map_or("-".to_string(), |b| b.short().to_string()),
-        age(view.created, now),
-        status_of(&view.git).unwrap_or_default().to_string(),
-        view.git.path.display().to_string(),
-    ]
+/// When a worktree was created: the birth time of its directory, which git
+/// makes at `worktree add`.
+///
+/// Where the filesystem has no birth time this falls back to the
+/// modification time, which moves whenever anything is written at the top
+/// level of the worktree, so the age is unreliable there. Every filesystem
+/// wtm targets has birth times.
+fn created_at(worktree: &Path) -> Option<SystemTime> {
+    let metadata = std::fs::metadata(worktree).ok()?;
+    metadata.created().or_else(|_| metadata.modified()).ok()
 }
 
 /// Anything about a worktree that is not the normal case. `None` for a
 /// healthy one, which `align` then drops as an empty column.
-fn status_of(worktree: &crate::git::GitWorktree) -> Option<&'static str> {
+fn status_of(worktree: &Worktree) -> Option<&'static str> {
     match worktree {
         w if w.prunable => Some("missing"),
         w if w.locked => Some("locked"),
@@ -126,33 +150,25 @@ fn unix_seconds(time: SystemTime) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
-pub fn cd(git: &Git, ui: &Ui, workspace: &Workspace, name: Option<&str>) -> Result<i32> {
+pub fn cd(ui: &Ui, repo: &Repo, name: Option<&str>) -> Result<i32> {
     let path = match name {
-        None => workspace.repo.main.clone(),
-        Some(name) => repo::find(git, ui, workspace, &WorktreeName::from_str(name)?)?.path,
+        None => repo.main.clone(),
+        Some(name) => repo.find(ui, &WorktreeName::from_str(name)?)?.path,
     };
     ui.emit(path.display().to_string());
     Ok(0)
 }
 
 /// Reruns the init hook, every value derived from the worktree itself since
-/// nothing about the original creation was recorded. `WTM_HOOK_METHOD` is the
-/// one thing that cannot be recovered that way, so it goes out empty.
-pub fn init(
-    git: &Git,
-    ui: &Ui,
-    workspace: &Workspace,
-    config: &Config,
-    name: Option<&str>,
-) -> Result<i32> {
+/// nothing about the original creation was recorded.
+pub fn init(ui: &Ui, repo: &Repo, config: &Config, name: Option<&str>) -> Result<i32> {
     let name = match name {
         Some(name) => WorktreeName::from_str(name)?,
-        None => current_worktree(git, workspace)?,
+        None => current_worktree(repo)?,
     };
-    let worktree = repo::find(git, ui, workspace, &name)?;
+    let worktree = repo.find(ui, &name)?;
 
-    let inspected = hook::inspect(config.init.value.clone(), config.init.origin.clone());
-    let Some(path) = inspected.path()? else {
+    let Some(path) = hook::resolve(&config.init)? else {
         ui.warn(format!(
             "no init hook at {}; nothing to run. Pass --init to name one",
             config.init.value.display()
@@ -160,33 +176,28 @@ pub fn init(
         return Ok(0);
     };
 
-    let repo = &workspace.repo;
-    let root = worktree.path.clone();
+    let base_sha = worktree
+        .head
+        .as_ref()
+        .and_then(|head| repo.base_of(head.as_str()));
     let env = HookEnv {
         name: name.to_string(),
-        branch: worktree.branch_short().unwrap_or_default().to_string(),
-        base_ref: config.base.value.clone(),
-        base_sha: repo::base_of(git, repo, &root)
-            .map(|oid| oid.to_string())
-            .unwrap_or_default(),
+        branch: worktree.branch.unwrap_or_default(),
+        base_sha: base_sha.map(|oid| oid.to_string()).unwrap_or_default(),
         main: repo.main.clone(),
-        repo_id: repo.id.to_string(),
-        method: String::new(),
-        root,
+        root: worktree.path,
     };
-    hook::run(path, &env, ui)?;
+    hook::run(&path, &env, ui)?;
     Ok(0)
 }
 
 /// The wtm worktree the caller is standing in. The main worktree does not
 /// count. wtm did not create it, and a hook is written for one it did.
-fn current_worktree(git: &Git, workspace: &Workspace) -> Result<WorktreeName> {
+fn current_worktree(repo: &Repo) -> Result<WorktreeName> {
     let cwd = std::env::current_dir().map_err(|e| Error::io("current directory", e))?;
-    let toplevel = git
-        .toplevel(&cwd)
+    let toplevel = git::toplevel(&cwd)
         .and_then(|path| std::fs::canonicalize(&path).map_err(|e| Error::io(path, e)))?;
-    workspace
-        .name_of(&toplevel)
+    repo.name_of(&toplevel)
         .ok_or_else(|| Error::usage("not inside a wtm worktree; name one with `wtm init <name>`"))
 }
 
@@ -197,46 +208,11 @@ fn current_worktree(git: &Git, workspace: &Workspace) -> Result<WorktreeName> {
 /// `git worktree prune` runs for the current repository only. Another
 /// repository's records are pruned when wtm runs there, and a repository
 /// that was deleted took its records with it.
-pub fn gc(git: &Git, ui: &Ui, workspace: &Workspace, wait: bool) -> Result<i32> {
-    let trashes = trash_dirs(workspace.root());
-
-    let failed = if wait {
-        let stats = reaper::sweep(&trashes, ui);
-        ui.progress(format!(
-            "swept {} entries, {} left to another sweep",
-            stats.deleted, stats.skipped
-        ));
-        stats.failed
-    } else {
-        for trash in &trashes {
-            reaper::spawn_detached_reaper(trash)?;
-        }
-        Vec::new()
-    };
-
-    ui.relay(&git.run(&workspace.repo.main, &["worktree", "prune"])?);
-    prune_empty_dirs(workspace.root());
-
-    if failed.is_empty() {
-        Ok(0)
-    } else {
-        Err(Error::Undeleted {
-            root: workspace.root().to_path_buf(),
-        })
-    }
-}
-
-/// Every `<repo-id>/.trash` directly under the data root. Nothing deeper is
-/// looked at, so a `.trash` anywhere else is never a sweep target.
-fn trash_dirs(root: &Path) -> Vec<std::path::PathBuf> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.path().join(".trash"))
-        .filter(|trash| trash.is_dir())
-        .collect()
+pub fn gc(ui: &Ui, repo: &Repo, wait: bool) -> Result<i32> {
+    trash::collect(ui, &repo.all_trashes(), wait)?;
+    ui.relay(&git::run(&repo.main, &["worktree", "prune"])?);
+    prune_empty_dirs(repo.root());
+    Ok(0)
 }
 
 /// `remove_dir` succeeds only on an empty directory, which is the whole test
@@ -289,9 +265,12 @@ pub fn config(ui: &Ui, config: &Config, json: bool) -> Result<i32> {
 /// the outcome or explains one that did. A machine that cannot clone is a
 /// supported machine, so the exit code stays 0; only a question we could
 /// not ask is a failure.
-pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i32> {
-    let repo = &workspace.repo;
-    let root = workspace.root();
+pub fn doctor(ui: &Ui, repo: &Repo, git_version: &GitVersion, json: bool) -> Result<i32> {
+    let root = repo.root();
+    let common_dir = git::stdout(
+        &repo.main,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
     let repo_device = clone::device_of(&repo.main);
     let root_device = clone::device_of(root);
     let same_filesystem = match (repo_device, root_device) {
@@ -304,30 +283,33 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
     // the first worktree is made, and probing must not create it, because
     // doctor only looks. Its nearest existing ancestor is on
     // the same filesystem, which is all the probe needs.
-    let repo_dir = workspace.repo_dir();
+    let repo_dir = repo.repo_dir();
     let probe_dir = clone::nearest_existing(&repo_dir).unwrap_or(root);
-    let cloner = clone::platform_cloner();
-    let decision = clone::decide(git, CloneMode::Auto, source, probe_dir, cloner.as_ref())?;
-    let sparse = source.is_some_and(|source| clone::is_sparse(git, source));
+    let unavailable = clone::unavailable(source, probe_dir);
+    let (method, reason) = match &unavailable {
+        None => ("cow", "clones with copy-on-write".to_string()),
+        Some(why) => ("checkout", format!("checks out: {}", why.reason)),
+    };
+    let sparse = source.is_some_and(clone::is_sparse);
     let submodules = source.map_or(0, |source| {
-        git.gitlinks(source).map_or(0, |list| list.len())
+        git::gitlinks(source).map_or(0, |list| list.len())
     });
     let include = source.map(|source| {
-        let file = exclude::include_file(source);
-        let matches = exclude::included_paths(git, source).map_or(0, |paths| paths.len());
+        let file = clone::exclude::include_file(source);
+        let matches = clone::exclude::included_paths(source).map_or(0, |paths| paths.len());
         (file, matches)
     });
 
     if json {
         ui.emit(
             serde_json::to_string_pretty(&json!({
-                "git_version": git.version().raw,
-                "repo": { "main": repo.main, "common_dir": repo.common_dir,
+                "git_version": git_version.raw,
+                "repo": { "main": repo.main, "common_dir": common_dir,
                           "id": repo.id.as_str(), "device": repo_device,
                           "bare": repo.bare },
                 "data_root": { "path": root, "device": root_device },
                 "same_filesystem": same_filesystem,
-                "method": { "method": decision.method.as_str(), "reason": decision.reason },
+                "method": { "method": method, "reason": reason },
                 "sparse": sparse,
                 "submodules": submodules,
                 "include": include.as_ref().map(|(file, matches)| json!({
@@ -340,10 +322,10 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
     }
 
     let rows = vec![
-        vec!["git".into(), git.version().raw.clone()],
+        vec!["git".into(), git_version.raw.clone()],
         vec!["repo".into(), repo.main.display().to_string()],
         vec!["repo id".into(), repo.id.to_string()],
-        vec!["git dir".into(), repo.common_dir.display().to_string()],
+        vec!["git dir".into(), common_dir.clone()],
         vec!["data root".into(), root.display().to_string()],
         vec![
             "volumes".into(),
@@ -360,7 +342,7 @@ pub fn doctor(git: &Git, ui: &Ui, workspace: &Workspace, json: bool) -> Result<i
         vec!["sparse".into(), if sparse { "yes" } else { "no" }.into()],
         vec!["submodules".into(), submodules.to_string()],
         vec!["include".into(), describe_include(include)],
-        vec!["method".into(), decision.reason],
+        vec!["method".into(), reason],
     ];
     for line in align(&rows) {
         ui.emit(line);

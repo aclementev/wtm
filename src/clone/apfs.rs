@@ -2,7 +2,6 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use super::Cloner;
 use crate::error::{Error, Result};
 
 /// With this flag `clonefile` copies a symlink argument as a symlink.
@@ -11,21 +10,13 @@ use crate::error::{Error, Result};
 const CLONE_NOFOLLOW: u32 = 0x0001;
 
 /// `clonefile(2)`. One call copies a whole tree, sharing blocks with the
-/// source until something writes.
-pub struct Clonefile;
+/// source until something writes. `dst` must not exist; its parent must.
+pub fn clone_tree(src: &Path, dst: &Path) -> Result<()> {
+    clonefile(src, dst)
+}
 
-impl Cloner for Clonefile {
-    fn clone_tree(&self, src: &Path, dst: &Path) -> Result<()> {
-        clonefile(src, dst)
-    }
-
-    fn clone_file(&self, src: &Path, dst: &Path) -> Result<()> {
-        clonefile(src, dst)
-    }
-
-    fn name(&self) -> &'static str {
-        "clonefile"
-    }
+pub fn clone_file(src: &Path, dst: &Path) -> Result<()> {
+    clonefile(src, dst)
 }
 
 fn clonefile(src: &Path, dst: &Path) -> Result<()> {

@@ -4,7 +4,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::Result;
-use crate::git::Git;
+use crate::git;
 
 /// What the clone walk does with one path. The names say the action rather
 /// than the reason. A path kept because `.worktreeinclude` asked for it and
@@ -62,13 +62,13 @@ pub fn include_file(source: &Path) -> PathBuf {
 /// The file carries itself only if it names itself. Carrying an untracked
 /// file that nothing ignores would leave a `??` in the new worktree's
 /// status, and `wtm rm` refuses a worktree whose status is not empty.
-pub fn included_paths(git: &Git, source: &Path) -> Result<Vec<PathBuf>> {
+pub fn included_paths(source: &Path) -> Result<Vec<PathBuf>> {
     let file = include_file(source);
     if !file.exists() {
         return Ok(Vec::new());
     }
     let arg = format!("--exclude-from={}", file.display());
-    paths(git, source, &["ls-files", "-z", "-o", "-i", &arg])
+    paths(source, &["ls-files", "-z", "-o", "-i", &arg])
 }
 
 impl ExcludeSet {
@@ -79,7 +79,7 @@ impl ExcludeSet {
     /// Git is the only authority on what is ignored. It never collapses a
     /// directory holding even one tracked file, and a matcher written here
     /// would eventually delete a tracked file.
-    pub fn compute(git: &Git, source: &Path) -> Result<ExcludeSet> {
+    pub fn compute(source: &Path) -> Result<ExcludeSet> {
         let ignored = &[
             "ls-files",
             "-z",
@@ -95,14 +95,11 @@ impl ExcludeSet {
         // version.
         let dirty = &["diff-index", "-z", "--name-only", "HEAD"];
 
-        let mut excluded = paths(git, source, ignored)?;
-        excluded.extend(paths(git, source, untracked)?);
-        excluded.extend(paths(git, source, dirty)?);
+        let mut excluded = paths(source, ignored)?;
+        excluded.extend(paths(source, untracked)?);
+        excluded.extend(paths(source, dirty)?);
 
-        Ok(ExcludeSet::from_lists(
-            excluded,
-            included_paths(git, source)?,
-        ))
+        Ok(ExcludeSet::from_lists(excluded, included_paths(source)?))
     }
 
     /// Pure, so the rules run without a repository on disk.
@@ -184,8 +181,8 @@ fn components(path: &Path) -> impl Iterator<Item = &OsStr> {
 
 /// Splits a `-z` listing. Git writes the paths relative to the directory it
 /// ran in, which is always the source root here.
-fn paths(git: &Git, source: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
-    let output = git.run(source, args)?;
+fn paths(source: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
+    let output = git::run(source, args)?;
     Ok(output
         .stdout
         .split(|byte| *byte == 0)

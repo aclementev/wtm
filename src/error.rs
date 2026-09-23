@@ -38,8 +38,8 @@ pub enum Error {
         name: String,
     },
 
-    #[error("could not remove everything under {}; the paths named above are still there", root.display())]
-    Undeleted { root: PathBuf },
+    #[error("could not remove {0} paths, named above; remove them by hand")]
+    Undeleted(usize),
 
     #[error(
         "copy-on-write cloning is unavailable: {reason}. --clone-mode auto falls back to a checkout"

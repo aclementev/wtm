@@ -37,8 +37,10 @@ pub struct Setting<T> {
 /// Every setting is scoped to whoever owns the decision. `dir`,
 /// `branch_prefix` and `fetch` describe this machine and this person, so a
 /// repository cannot set them. Cloning a repo must never relocate your
-/// worktrees, rename your branches or add a network round-trip. `base`
-/// describes the repository, so only it may come from the project file.
+/// worktrees, rename your branches or add a network round-trip. `base` and
+/// `init` describe the repository, so only its own file may set them. A
+/// global `init` would also outrank the repository's `wtm-init.sh`, which
+/// is the default rather than a setting.
 #[derive(Debug)]
 pub struct Config {
     pub dir: Setting<PathBuf>,
@@ -114,7 +116,20 @@ pub fn load(
     let (global, global_path) = read(global_file)?;
 
     if let Some(path) = &project_path {
-        reject_user_scoped(&project, path)?;
+        reject(
+            &project,
+            path,
+            &["dir", "branch_prefix", "fetch"],
+            "is a personal setting and cannot be set by a project",
+        )?;
+    }
+    if let Some(path) = &global_path {
+        reject(
+            &global,
+            path,
+            &["base", "init"],
+            "describes a repository and belongs in its .wtm/config.toml",
+        )?;
     }
 
     let project_origin = || Origin::Project(project_path.clone().unwrap_or_default());
@@ -172,10 +187,6 @@ pub fn load(
                         .map(|p| source.join(expand_tilde(p))),
                     project_origin(),
                 ),
-                (
-                    global.init.as_deref().map(|p| source.join(expand_tilde(p))),
-                    global_origin(),
-                ),
             ],
             source.join(DEFAULT_HOOK),
         ),
@@ -197,22 +208,26 @@ fn choose<T>(candidates: Vec<(Option<T>, Origin)>, default: T) -> Setting<T> {
     }
 }
 
-/// A project file that sets a machine-scoped key is an error. Ignoring the
-/// value would hide a mistake its author wants to hear about.
-fn reject_user_scoped(raw: &RawConfig, file: &Path) -> Result<()> {
-    let offender = [
+/// A file that sets a key it does not own is an error naming the file and
+/// the key. Ignoring the value would hide a mistake its author wants to hear
+/// about.
+fn reject(raw: &RawConfig, file: &Path, keys: &[&str], why: &str) -> Result<()> {
+    let present = [
         ("dir", raw.dir.is_some()),
+        ("base", raw.base.is_some()),
         ("branch_prefix", raw.branch_prefix.is_some()),
         ("fetch", raw.fetch.is_some()),
-    ]
-    .into_iter()
-    .find_map(|(key, present)| present.then_some(key));
+        ("init", raw.init.is_some()),
+    ];
+    let offender = present
+        .into_iter()
+        .find_map(|(key, set)| (set && keys.contains(&key)).then_some(key));
 
     match offender {
         None => Ok(()),
         Some(key) => Err(Error::Config {
             file: file.to_path_buf(),
-            message: format!("{key} is a personal setting and cannot be set by a project"),
+            message: format!("{key} {why}"),
         }),
     }
 }

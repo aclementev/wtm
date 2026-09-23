@@ -4,23 +4,17 @@ use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
 use proptest::prelude::*;
-use wtm::exclude::{Class, ExcludeSet};
+use wtm::clone::exclude::{Class, ExcludeSet};
 use wtm::name::WorktreeName;
 use wtm::repo::{Repo, RepoId};
-use wtm::workspace::Workspace;
 
-/// A workspace over paths that need not exist, since every method under
+/// A repository over paths that need not exist, since every method under
 /// test is a path join or its inverse.
-fn workspace() -> Workspace {
-    let main = PathBuf::from("/repos/monorepo");
-    Workspace::new(
-        Repo {
-            id: RepoId::for_main_worktree(&main),
-            common_dir: main.join(".git"),
-            bare: false,
-            main,
-        },
-        PathBuf::from("/data/root"),
+fn repo() -> Repo {
+    Repo::new(
+        PathBuf::from("/repos/monorepo"),
+        false,
+        Path::new("/data/root"),
     )
 }
 
@@ -69,9 +63,9 @@ proptest! {
         let Ok(name) = WorktreeName::from_str(&text) else {
             return Ok(());
         };
-        let workspace = workspace();
-        let repo_dir = workspace.repo_dir();
-        let worktree_dir = workspace.dir(&name);
+        let repo = repo();
+        let repo_dir = repo.repo_dir();
+        let worktree_dir = repo.dir(&name);
 
         prop_assert!(worktree_dir.starts_with(&repo_dir));
         prop_assert_ne!(&worktree_dir, &repo_dir);
@@ -108,13 +102,13 @@ fn names_that_could_escape_the_repository_directory_are_refused() {
 
 #[test]
 fn a_name_is_recovered_from_the_path_it_produces() {
-    let workspace = workspace();
+    let repo = repo();
     let name = WorktreeName::from_str("feat/login").unwrap();
 
-    let path: PathBuf = workspace.dir(&name);
-    assert_eq!(workspace.name_of(&path), Some(name));
-    assert_eq!(workspace.name_of(Path::new("/elsewhere/feat")), None);
-    assert_eq!(workspace.name_of(&workspace.trash().join("gone-abc")), None);
+    let path: PathBuf = repo.dir(&name);
+    assert_eq!(repo.name_of(&path), Some(name));
+    assert_eq!(repo.name_of(Path::new("/elsewhere/feat")), None);
+    assert_eq!(repo.name_of(&repo.trash().join("gone-abc")), None);
 }
 
 /// Every path the exclusion properties query: all of them up to four deep

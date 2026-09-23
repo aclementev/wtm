@@ -3,9 +3,7 @@ mod common;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::RepoBuilder;
-use wtm::git::Git;
-use wtm::repo::{self, Repo};
-use wtm::workspace::Workspace;
+use wtm::git;
 
 // These replace stored state. Every one is a fact `wtm` could have written
 // down and instead derives.
@@ -70,11 +68,9 @@ fn gits_metadata_directory_name_is_read_back_and_never_computed() {
     repo.wtm().args(["new", "a/task"]).assert().success();
     repo.wtm().args(["new", "b/task"]).assert().success();
 
-    let git = Git::new().unwrap();
-    let discovered = Repo::discover(&git, &repo.main).unwrap();
     let id = repo.repo_id();
-    let first = git.gitdir_of(&repo.worktree_path(&id, "a/task")).unwrap();
-    let second = git.gitdir_of(&repo.worktree_path(&id, "b/task")).unwrap();
+    let first = git::gitdir_of(&repo.worktree_path(&id, "a/task")).unwrap();
+    let second = git::gitdir_of(&repo.worktree_path(&id, "b/task")).unwrap();
 
     assert_ne!(first, second);
     assert!(first.is_dir() && second.is_dir());
@@ -87,8 +83,8 @@ fn gits_metadata_directory_name_is_read_back_and_never_computed() {
 
     // Both are still listed with a creation time, which is the fact that
     // depends on resolving the metadata directory correctly.
-    let workspace = Workspace::new(discovered, repo.data.clone());
-    let views = repo::view(&git, &workspace).unwrap();
-    assert_eq!(views.len(), 2);
-    assert!(views.iter().all(|v| v.created.is_some()));
+    let listing = json(repo.wtm().args(["ls", "--json"]).output().unwrap().stdout);
+    let listing = listing.as_array().unwrap();
+    assert_eq!(listing.len(), 2);
+    assert!(listing.iter().all(|w| w["created"].as_u64().is_some()));
 }

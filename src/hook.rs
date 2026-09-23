@@ -5,67 +5,30 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::config::Origin;
+use crate::config::{Origin, Setting};
 use crate::error::{Error, Result};
 use crate::git::SCRUBBED;
 use crate::ui::Ui;
 
-/// What resolving the init hook came to. Any path here is absolute.
+/// The init hook to run, or `None` when there is nothing to run.
 ///
-/// `--no-init` and an absent default `wtm-init.sh` both give `Skip`. Neither
-/// is worth reporting, and nothing downstream needs to tell them apart. An
-/// absent hook that someone did configure is `Unusable` instead.
-pub enum Hook {
-    Skip,
-    Run(PathBuf),
-    Unusable {
-        path: PathBuf,
-        origin: Origin,
-        reason: &'static str,
-    },
-}
-
-impl Hook {
-    /// The refusal lives here so that `new`, which asks among its
-    /// preconditions, and `init`, which asks before anything else, cannot
-    /// word it differently.
-    pub fn path(&self) -> Result<Option<&Path>> {
-        match self {
-            Hook::Skip => Ok(None),
-            Hook::Run(path) => Ok(Some(path)),
-            Hook::Unusable {
-                path,
-                origin,
-                reason,
-            } => Err(Error::usage(format!(
-                "init hook {} {reason} ({origin})",
-                path.display()
-            ))),
-        }
-    }
-}
-
-/// Looks the hook up on disk, apart from running it, so that `new` can refuse
-/// one it could never run before it creates anything.
-pub fn inspect(path: PathBuf, origin: Origin) -> Hook {
-    let unusable = |reason| Hook::Unusable {
-        path: path.clone(),
-        origin: origin.clone(),
-        reason,
+/// An absent default `wtm-init.sh` is the normal case and says nothing. A
+/// hook someone configured that could never run is refused naming the path,
+/// the reason and the layer that set it, before anything is created.
+pub fn resolve(init: &Setting<PathBuf>) -> Result<Option<PathBuf>> {
+    let path = &init.value;
+    let reason = match std::fs::metadata(path) {
+        Err(_) if init.origin == Origin::Default => return Ok(None),
+        Err(_) => "does not exist",
+        Ok(meta) if !meta.is_file() => "is not a file",
+        Ok(meta) if meta.permissions().mode() & 0o111 == 0 => "is not executable",
+        Ok(_) => return Ok(Some(path.clone())),
     };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return match origin {
-            Origin::Default => Hook::Skip,
-            _ => unusable("does not exist"),
-        };
-    };
-    if !metadata.is_file() {
-        return unusable("is not a file");
-    }
-    if metadata.permissions().mode() & 0o111 == 0 {
-        return unusable("is not executable");
-    }
-    Hook::Run(path)
+    Err(Error::usage(format!(
+        "init hook {} {reason} ({})",
+        path.display(),
+        init.origin
+    )))
 }
 
 /// The `WTM_HOOK_*` environment a hook is given.
@@ -74,32 +37,25 @@ pub fn inspect(path: PathBuf, origin: Origin) -> Hook {
 /// configuration. Under one namespace, a hook that starts a long-lived
 /// process would hand this worktree's base to every later wtm run under it.
 ///
-/// Every field is exported on every run, so a hook may use `set -u`. A field
-/// that does not apply is empty rather than missing: `method` after a rerun,
-/// `base_sha` for a branch that already existed.
+/// Every field is exported on every run, so a hook may use `set -u`.
+/// `base_sha` is empty when no merge-base with the default branch exists.
 pub struct HookEnv {
     pub root: PathBuf,
     pub name: String,
     pub branch: String,
-    pub base_ref: String,
     pub base_sha: String,
     pub main: PathBuf,
-    pub repo_id: String,
-    pub method: String,
 }
 
 impl HookEnv {
     /// `OsStr` so that a path which is not UTF-8 reaches the hook as it is.
-    fn vars(&self) -> [(&'static str, &OsStr); 8] {
+    fn vars(&self) -> [(&'static str, &OsStr); 5] {
         [
             ("WTM_HOOK_ROOT", self.root.as_os_str()),
             ("WTM_HOOK_NAME", self.name.as_ref()),
             ("WTM_HOOK_BRANCH", self.branch.as_ref()),
-            ("WTM_HOOK_BASE_REF", self.base_ref.as_ref()),
             ("WTM_HOOK_BASE_SHA", self.base_sha.as_ref()),
             ("WTM_HOOK_MAIN", self.main.as_os_str()),
-            ("WTM_HOOK_REPO_ID", self.repo_id.as_ref()),
-            ("WTM_HOOK_METHOD", self.method.as_ref()),
         ]
     }
 }
