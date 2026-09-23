@@ -102,6 +102,10 @@ pub struct Observed {
     pub source_head: Option<Oid>,
     pub base: Option<Oid>,
     pub branch: BranchState,
+    /// Whether git accepts the branch name. A worktree name git would refuse
+    /// as a branch, such as `x.lock`, is otherwise only found out after the
+    /// whole tree has been cloned.
+    pub valid_branch: bool,
     pub in_progress: Option<&'static str>,
     /// Where the name is already in use, if it is.
     pub occupied: Option<PathBuf>,
@@ -161,6 +165,13 @@ pub fn observe(git: &Git, workspace: &Workspace, request: &Request) -> Result<Ob
         source_head: git.rev_parse(main, "HEAD").ok(),
         base: resolve_base(git, workspace, &request.base_spec),
         branch: branch_state(git, main, &worktrees, &request.branch),
+        valid_branch: git.succeeds(
+            main,
+            &[
+                "check-ref-format",
+                &format!("refs/heads/{}", request.branch),
+            ],
+        ),
         in_progress: git
             .gitdir_of(main)
             .and_then(|gitdir| Git::in_progress_operation(&gitdir)),
@@ -218,6 +229,12 @@ pub fn check(request: &Request, observed: &Observed) -> Result<Plan> {
     // First because it is the only rule needing nothing from git, and a hook
     // that could never run should not cost a worktree.
     let hook = observed.hook.path()?.map(Path::to_path_buf);
+    if !observed.valid_branch {
+        return Err(Error::usage(format!(
+            "{} is not a valid branch name; pass --branch to choose another",
+            request.branch
+        )));
+    }
 
     let Some(source_head) = observed.source_head.clone() else {
         return Err(Error::usage(
@@ -533,6 +550,7 @@ mod tests {
             source_head: Some(Oid::from_hex("a".repeat(40))),
             base: Some(Oid::from_hex("b".repeat(40))),
             branch: BranchState::Absent,
+            valid_branch: true,
             in_progress: None,
             occupied: None,
             hook: Hook::Skip,
@@ -588,6 +606,13 @@ mod tests {
                 ..observed()
             })
             .contains("no commit")
+        );
+        assert!(
+            message(Observed {
+                valid_branch: false,
+                ..observed()
+            })
+            .contains("not a valid branch name")
         );
         assert!(
             message(Observed {
