@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  # The same suite on the three filesystems wtm behaves differently on.
+  # Fixtures live under target/tmp, so that is where the filesystem under
+  # test is mounted.
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS, APFS clonefile
+            os: macos-latest
+            fs: apfs
+          - name: Linux, XFS reflink
+            os: ubuntu-latest
+            fs: xfs
+          - name: Linux, ext4 checkout
+            os: ubuntu-latest
+            fs: ext4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.fs }}
+
+      # The wrapper tests run each shell for real and fail when one is
+      # missing.
+      - name: Install shells
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish xfsprogs
+      - name: Install shells
+        if: runner.os == 'macOS'
+        run: brew install fish
+
+      - name: Mount an XFS filesystem with reflinks at target/tmp
+        if: matrix.fs == 'xfs'
+        run: |
+          truncate -s 4G "$RUNNER_TEMP/xfs.img"
+          mkfs.xfs -q -m reflink=1 "$RUNNER_TEMP/xfs.img"
+          mkdir -p target/tmp
+          sudo mount -o loop "$RUNNER_TEMP/xfs.img" target/tmp
+          sudo chown "$(id -u):$(id -g)" target/tmp
+          # Fail here, not quietly in the tests, if the mount cannot clone.
+          echo probe > target/tmp/probe
+          cp --reflink=always target/tmp/probe target/tmp/probe.clone
+          rm target/tmp/probe target/tmp/probe.clone
+
+      - run: cargo test
