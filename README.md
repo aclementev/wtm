@@ -15,7 +15,7 @@ sparse checkout, no virtual filesystem and no daemon.
 cargo install --git https://github.com/aclementev/wtm
 ```
 
-You need git 2.36 or later, on macOS or Linux. Then add the shell function,
+You need git 2.31 or later, on macOS or Linux. Then add the shell function,
 so `wtm new` and `wtm cd` can change your directory:
 
 ```sh

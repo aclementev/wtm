@@ -95,8 +95,7 @@ fn ls_derives_branch_base_age_and_status() {
     assert_eq!(status("feat/login"), "locked");
     assert_eq!(status("from-sha"), "missing");
 
-    let text = repo.wtm().arg("ls").output().unwrap();
-    let text = String::from_utf8(text.stdout).unwrap();
+    let text = repo.wtm_stdout(&["ls"]);
     assert!(
         made.iter().all(|(name, _, _)| text.contains(name)),
         "{text}"
@@ -208,7 +207,11 @@ fn new_refuses_a_repository_mid_rebase_and_names_the_operation() {
 
     // A conflicting rebase stops and leaves the in-progress markers behind.
     let mut rebase = std::process::Command::new("git");
-    rebase.arg("-C").arg(&repo.main).args(["rebase", "main"]);
+    rebase
+        .arg("-C")
+        .arg(&repo.main)
+        .args(["rebase", "main"])
+        .envs(repo.env());
     assert!(!rebase.output().unwrap().status.success());
 
     repo.wtm()

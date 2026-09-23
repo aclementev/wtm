@@ -6,9 +6,17 @@ use std::process::{Command, Output, Stdio};
 
 use crate::error::{Error, Result};
 
-/// `worktree list --porcelain -z` arrived in git 2.36. Parallel checkout,
-/// which the fallback creation path relies on, arrived in 2.31.
-const MIN_VERSION: (u32, u32) = (2, 36);
+/// Before 2.31, `worktree list --porcelain` does not say which worktrees
+/// are locked, and `wtm rm` would remove one. `rev-parse --path-format`
+/// arrived in the same release. Parallel checkout arrived in 2.32; an older
+/// git ignores `checkout.workers`, and the fallback checkout runs on one core.
+const MIN_VERSION: (u32, u32) = (2, 31);
+
+/// `worktree list -z` arrived in 2.36. Older git ends each field with a
+/// newline and writes paths unquoted, so a path containing a newline splits
+/// its record. A name `wtm` accepts never contains one, so only a path
+/// someone else chose, such as the main checkout's, can.
+const WORKTREE_LIST_Z: (u32, u32) = (2, 36);
 
 /// Variables that would silently redirect a subprocess at the caller's
 /// repository instead of the one we named with `-C`. Inheriting them has
@@ -49,7 +57,7 @@ impl fmt::Display for Oid {
 }
 
 /// One record of `git worktree list --porcelain`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitWorktree {
     pub path: PathBuf,
     pub head: Option<Oid>,
@@ -81,14 +89,24 @@ pub struct GitVersion {
     pub raw: String,
 }
 
-/// Checks that git is new enough and returns its version, which `doctor`
-/// reports. Every git invocation in `wtm` goes through this module; nothing
-/// else spawns git.
+impl GitVersion {
+    fn at_least(&self, (major, minor): (u32, u32)) -> bool {
+        (self.major, self.minor) >= (major, minor)
+    }
+}
+
+/// Checks that git is new enough and returns its version, which decides the
+/// output formats `wtm` asks git for. Every git invocation in `wtm` goes
+/// through this module; nothing else spawns git.
 pub fn check_version() -> Result<GitVersion> {
     let version = parse_version(&stdout(Path::new("."), &["--version"])?)?;
-    if (version.major, version.minor) < MIN_VERSION {
+    if !version.at_least(MIN_VERSION) {
         return Err(Error::GitVersion {
-            found: version.raw,
+            found: version
+                .raw
+                .strip_prefix("git version ")
+                .unwrap_or(&version.raw)
+                .to_string(),
             needed: format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1),
         });
     }
@@ -220,9 +238,14 @@ pub fn gitlinks(cwd: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-pub fn worktrees(cwd: &Path) -> Result<Vec<GitWorktree>> {
-    let output = run(cwd, &["worktree", "list", "--porcelain", "-z"])?;
-    Ok(parse_worktree_list(&output.stdout))
+pub fn worktrees(cwd: &Path, git: &GitVersion) -> Result<Vec<GitWorktree>> {
+    let (args, separator): (&[&str], u8) = if git.at_least(WORKTREE_LIST_Z) {
+        (&["worktree", "list", "--porcelain", "-z"], b'\0')
+    } else {
+        (&["worktree", "list", "--porcelain"], b'\n')
+    };
+    let output = run(cwd, args)?;
+    Ok(parse_worktree_list(&output.stdout, separator))
 }
 
 /// The worktree root containing `cwd`: for a linked worktree that is
@@ -278,13 +301,13 @@ fn parse_version(text: &str) -> Result<GitVersion> {
     })
 }
 
-/// Records are separated by an empty field, attributes within a record by NUL.
-/// The `-z` form is used because a worktree path may contain a newline.
-fn parse_worktree_list(bytes: &[u8]) -> Vec<GitWorktree> {
+/// Records are separated by an empty field, and each field ends with
+/// `separator`: NUL under `-z`, a newline without it.
+fn parse_worktree_list(bytes: &[u8], separator: u8) -> Vec<GitWorktree> {
     let mut worktrees = Vec::new();
     let mut current: Option<GitWorktree> = None;
 
-    for field in bytes.split(|b| *b == 0) {
+    for field in bytes.split(|b| *b == separator) {
         if field.is_empty() {
             worktrees.extend(current.take());
             continue;
@@ -327,12 +350,79 @@ fn parse_worktree_list(bytes: &[u8]) -> Vec<GitWorktree> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    /// Writes records in the porcelain layout, fields in the order git prints them.
+    fn render(worktrees: &[GitWorktree], separator: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for w in worktrees {
+            let mut field = |parts: &[&[u8]]| {
+                bytes.extend(parts.concat());
+                bytes.push(separator);
+            };
+            field(&[b"worktree ", w.path.as_os_str().as_bytes()]);
+            if w.bare {
+                field(&[b"bare"]);
+            }
+            if let Some(head) = &w.head {
+                field(&[b"HEAD ", head.as_str().as_bytes()]);
+            }
+            match &w.branch {
+                Some(branch) => field(&[b"branch ", branch.as_bytes()]),
+                None => field(&[b"detached"]),
+            }
+            if w.locked {
+                field(&[b"locked"]);
+            }
+            if w.prunable {
+                field(&[b"prunable gitdir file points to non-existent location"]);
+            }
+            bytes.push(separator);
+        }
+        bytes
+    }
+
+    fn worktree() -> impl Strategy<Value = GitWorktree> {
+        (
+            r"/[^\x00\n]{0,40}",
+            proptest::option::of("[0-9a-f]{40}"),
+            proptest::option::of("refs/heads/[a-z0-9/._-]{1,20}"),
+            any::<[bool; 3]>(),
+        )
+            .prop_map(
+                |(path, head, branch, [bare, locked, prunable])| GitWorktree {
+                    path: PathBuf::from(path),
+                    head: head.map(Oid),
+                    branch,
+                    bare,
+                    locked,
+                    prunable,
+                },
+            )
+    }
+
+    proptest! {
+        /// Git older than 2.36 has no `-z`, and the newline form it prints
+        /// instead must read the same as long as no path holds a newline.
+        #[test]
+        fn either_separator_reads_back_what_git_wrote(
+            worktrees in proptest::collection::vec(worktree(), 0..5),
+        ) {
+            for separator in *b"\0\n" {
+                prop_assert_eq!(
+                    parse_worktree_list(&render(&worktrees, separator), separator),
+                    worktrees.clone()
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_newline_in_a_path_does_not_split_the_record() {
         let bytes = b"worktree /a/we\nird\0HEAD 072b863\0detached\0\0";
-        let list = parse_worktree_list(bytes);
+        let list = parse_worktree_list(bytes, b'\0');
 
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].path, PathBuf::from("/a/we\nird"));

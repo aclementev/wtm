@@ -16,6 +16,11 @@ fn run(args: &[&str]) -> String {
         .args(args)
         .output()
         .expect("run wtm");
+    assert!(
+        output.status.success(),
+        "wtm {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8(output.stdout).expect("utf-8 output")
 }
 
@@ -110,10 +115,7 @@ fn in_shell(
         .arg(script)
         .current_dir(&repo.main)
         .env("PATH", path_with_wtm())
-        .env("HOME", &repo.root)
-        .env("XDG_CONFIG_HOME", repo.root.join("config"))
-        .env("XDG_DATA_HOME", repo.root.join("share"))
-        .env("WTM_DIR", &repo.data)
+        .envs(repo.env())
         .output()
         .expect("run the shell")
 }
@@ -137,10 +139,12 @@ fn each_wrapper_changes_directory_in_its_own_shell() {
         let printed = String::from_utf8_lossy(&output.stdout)
             .trim_end()
             .to_string();
-        let expected = repo.wtm().args(["cd", "task"]).output().unwrap().stdout;
+        // Checked, because a failed `wtm cd` prints nothing, and neither
+        // would a wrapper that never ran.
+        let expected = repo.wtm_stdout(&["cd", "task"]);
         assert_eq!(
             printed,
-            String::from_utf8(expected).unwrap().trim_end(),
+            expected.trim_end(),
             "{shell} wrapper did not change directory; stderr:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );

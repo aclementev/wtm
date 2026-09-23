@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -110,6 +111,23 @@ impl TestRepo {
         self.git(&["config", "user.name", "Test"]);
     }
 
+    /// The environment of every process a test starts, git and `wtm` alike,
+    /// so the fixture and the tool under test read the same configuration
+    /// and none of it is the developer's. A home inside the scratch root
+    /// keeps out `~/.gitconfig` and the user's `wtm` config, and
+    /// `GIT_CONFIG_NOSYSTEM` keeps out the machine-wide gitconfig. Either can
+    /// hold a setting an older git rejects, such as `merge.conflictStyle =
+    /// zdiff3` before 2.35, which fails every checkout.
+    pub fn env(&self) -> Vec<(&'static str, OsString)> {
+        vec![
+            ("HOME", self.root.clone().into()),
+            ("XDG_CONFIG_HOME", self.root.join("config").into()),
+            ("XDG_DATA_HOME", self.root.join("share").into()),
+            ("WTM_DIR", self.data.clone().into()),
+            ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        ]
+    }
+
     pub fn write(&self, relative: &str, contents: &str) {
         let path = self.main.join(relative);
         if let Some(parent) = path.parent() {
@@ -129,8 +147,14 @@ impl TestRepo {
     /// Runs git with the same scrubbed environment as the binary, so oracle
     /// and subject always see the same repository.
     pub fn git_in(&self, cwd: &Path, args: &[&str]) -> String {
+        // A path read from a failed `wtm` run is empty, and `git -C ""` runs
+        // in the test process's directory, which is this crate's own checkout.
+        assert!(
+            cwd.starts_with(&self.root),
+            "git would run outside the test's scratch directory, in {cwd:?}"
+        );
         let mut command = Command::new("git");
-        command.arg("-C").arg(cwd).args(args);
+        command.arg("-C").arg(cwd).args(args).envs(self.env());
         for key in [
             "GIT_DIR",
             "GIT_WORK_TREE",
@@ -189,18 +213,14 @@ impl TestRepo {
         ]);
     }
 
-    /// `wtm` as a plain process, isolated from the developer's own home
-    /// directory so no real configuration can influence a test, with
+    /// `wtm` as a plain process in the environment of [`TestRepo::env`], with
     /// background reapers left on. For tests that need to spawn it and hold
     /// its pipes.
     pub fn process(&self) -> Command {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin("wtm"));
         command
             .current_dir(&self.main)
-            .env("HOME", &self.root)
-            .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("XDG_DATA_HOME", self.root.join("share"))
-            .env("WTM_DIR", &self.data)
+            .envs(self.env())
             .env_remove("WTM_DEBUG")
             .env_remove("WTM_NO_REAPER");
         command
@@ -231,12 +251,20 @@ impl TestRepo {
         PathBuf::from(String::from_utf8(output.stdout).unwrap().trim_end())
     }
 
+    /// Runs `wtm` and returns its stdout, failing the test with `wtm`'s stderr
+    /// when it exits non-zero. The output of a failed run is empty, and a test
+    /// that used it as a path would act on this crate's own checkout.
+    pub fn wtm_stdout(&self, args: &[&str]) -> String {
+        let assert = self.wtm().args(args).assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 output")
+    }
+
     /// The repo id `wtm` computes, read back from the tool rather than
     /// recomputed, for tests that plant entries in a trash before any
     /// worktree exists.
     pub fn repo_id(&self) -> String {
-        let output = self.wtm().args(["doctor", "--json"]).output().unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&self.wtm_stdout(&["doctor", "--json"])).unwrap();
         json["repo"]["id"].as_str().unwrap().to_string()
     }
 
@@ -246,8 +274,8 @@ impl TestRepo {
 
     /// Whether `wtm new` would clone here, asked of `wtm` itself.
     pub fn clones(&self) -> bool {
-        let output = self.wtm().args(["doctor", "--json"]).output().unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&self.wtm_stdout(&["doctor", "--json"])).unwrap();
         json["method"]["method"] == "cow"
     }
 

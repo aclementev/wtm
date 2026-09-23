@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use proptest::prelude::*;
 use wtm::clone::exclude::{Class, ExcludeSet};
+use wtm::git::GitVersion;
 use wtm::name::WorktreeName;
 use wtm::repo::Repo;
 
@@ -15,7 +16,12 @@ proptest! {
         let Ok(name) = WorktreeName::from_str(&text) else {
             return Ok(());
         };
-        let repo = Repo::new(PathBuf::from("/repos/monorepo"), false, Path::new("/data/root"));
+        let repo = Repo::new(
+            PathBuf::from("/repos/monorepo"),
+            false,
+            Path::new("/data/root"),
+            GitVersion::default(),
+        );
         let worktree_dir = repo.dir(&name);
 
         prop_assert!(worktree_dir.starts_with(repo.repo_dir()));

@@ -5,7 +5,7 @@ use std::str::FromStr;
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
-use crate::git::{self, Oid};
+use crate::git::{self, GitVersion, Oid};
 use crate::name::WorktreeName;
 use crate::ui::Ui;
 
@@ -56,14 +56,14 @@ fn hex(bytes: &[u8]) -> String {
 ///
 /// Separate from `Repo::new` because the project configuration, which says
 /// where the data root is, lives in the main worktree.
-pub fn main_worktree(from: &Path) -> Result<(PathBuf, bool)> {
+pub fn main_worktree(from: &Path, git: &GitVersion) -> Result<(PathBuf, bool)> {
     if !git::succeeds(from, &["rev-parse", "--git-dir"]) {
         return Err(Error::NotARepo(from.to_path_buf()));
     }
     // The first record of `worktree list` is always the main worktree,
     // which is not otherwise derivable, because a repository may keep its
     // git directory somewhere else entirely.
-    let first = git::worktrees(from)?
+    let first = git::worktrees(from, git)?
         .into_iter()
         .next()
         .ok_or_else(|| Error::NotARepo(from.to_path_buf()))?;
@@ -87,6 +87,9 @@ pub struct Repo {
     /// No working tree of its own, so there is nothing to clone from and
     /// creation must fall back to checkout.
     pub bare: bool,
+    /// The git on `PATH`, which decides the output formats every query of
+    /// this repository asks for.
+    pub git: GitVersion,
     root: PathBuf,
 }
 
@@ -107,11 +110,12 @@ pub struct Worktree {
 impl Repo {
     /// `root` is canonicalized here: git reports worktree paths with
     /// symlinks resolved, and `name_of` prefix-matches the root against them.
-    pub fn new(main: PathBuf, bare: bool, root: &Path) -> Repo {
+    pub fn new(main: PathBuf, bare: bool, root: &Path, git: GitVersion) -> Repo {
         Repo {
             id: RepoId::for_main_worktree(&main),
             main,
             bare,
+            git,
             root: canonical_root(root),
         }
     }
@@ -169,7 +173,7 @@ impl Repo {
 
     /// The worktrees of this repository that wtm made, sorted by name.
     pub fn worktrees(&self) -> Result<Vec<Worktree>> {
-        let mut ours: Vec<Worktree> = git::worktrees(&self.main)?
+        let mut ours: Vec<Worktree> = git::worktrees(&self.main, &self.git)?
             .into_iter()
             .filter_map(|w| {
                 Some(Worktree {

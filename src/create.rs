@@ -64,7 +64,7 @@ pub fn run(
     }
 
     // `None` means the branch exists and is checked out as it is.
-    let base = match branch_state(main, &branch)? {
+    let base = match branch_state(repo, &branch)? {
         BranchState::CheckedOut(at) => return Err(Error::BranchCheckedOut { branch, at }),
         // A default base is only a default, but a `--base` someone typed is
         // a request this cannot honour, and a warning would scroll past.
@@ -124,11 +124,11 @@ enum BranchState {
 
 /// Checked out anywhere means in any worktree of the repository, the main
 /// one and those wtm did not make included.
-fn branch_state(main: &Path, branch: &str) -> Result<BranchState> {
-    if !git::branch_exists(main, branch) {
+fn branch_state(repo: &Repo, branch: &str) -> Result<BranchState> {
+    if !git::branch_exists(&repo.main, branch) {
         return Ok(BranchState::Absent);
     }
-    let holder = git::worktrees(main)?
+    let holder = git::worktrees(&repo.main, &repo.git)?
         .into_iter()
         .find(|w| w.branch_short() == Some(branch));
     Ok(match holder {

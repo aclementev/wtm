@@ -86,12 +86,12 @@ pub fn run(cli: Cli) -> Result<i32> {
 
     // Build order: the repository locates the project configuration, and the
     // configuration locates the data root.
-    let git_version = git::check_version()?;
+    let git = git::check_version()?;
     // Kept apart from `from`: with `--repo` the two are not even in the same
     // tree, and a relative `--init` follows the caller, not the repository.
     let cwd = std::env::current_dir().map_err(|e| Error::io("current directory", e))?;
     let from = cli.repo.clone().unwrap_or_else(|| cwd.clone());
-    let (main, bare) = repo::main_worktree(&from)?;
+    let (main, bare) = repo::main_worktree(&from, &git)?;
     let config = config::load(
         &flags(&cli),
         &|key| std::env::var(key).ok(),
@@ -100,7 +100,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         &cwd,
         &main,
     )?;
-    let repo = Repo::new(main, bare, &config.dir.value);
+    let repo = Repo::new(main, bare, &config.dir.value, git);
 
     // Removal leaves bytes for later, so every command that gets this far
     // pays one readdir to start collecting them. A reaper is only spawned
@@ -133,7 +133,7 @@ pub fn run(cli: Cli) -> Result<i32> {
             };
             remove::remove(&ui, &repo, &WorktreeName::from_str(&args.name)?, &options)
         }
-        Command::Doctor(args) => commands::doctor(&ui, &repo, &git_version, args.json),
+        Command::Doctor(args) => commands::doctor(&ui, &repo, args.json),
         Command::Config(args) => commands::config(&ui, &config, args.json),
         Command::Init(args) => commands::init(&ui, &repo, &config, args.name.as_deref()),
         Command::Gc(args) => commands::gc(&ui, &repo, args.wait),
