@@ -5,7 +5,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use common::{RepoBuilder, TestRepo};
+use common::{RepoBuilder, TestRepo, wait_until_trusted};
 use proptest::prelude::*;
 
 /// Directory names, two of which the ignore grammar names whole.
@@ -242,6 +242,9 @@ fn a_cloned_worktree_keeps_the_source_mtime_of_an_untouched_file() {
     // learns the new mtime the file counts as modified and is left for git
     // to write.
     repo.git(&["update-index", "--refresh", "-q"]);
+    // The change above moved the file's ctime, and a file changed that
+    // recently is left for git to write rather than trusted from the clone.
+    wait_until_trusted();
 
     let output = repo
         .wtm()

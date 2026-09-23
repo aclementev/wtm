@@ -67,4 +67,4 @@ jobs:
           cp --reflink=always target/tmp/probe target/tmp/probe.clone
           rm target/tmp/probe target/tmp/probe.clone
 
-      - run: cargo test
+      - run: cargo test --no-fail-fast
