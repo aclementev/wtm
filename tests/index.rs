@@ -4,10 +4,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
-use common::TestRepo;
 use common::repo::scratch;
+use common::{TestRepo, wait_until_trusted};
 use wtm::git::Oid;
 use wtm::index::{self, HashAlgo};
 
@@ -98,16 +98,6 @@ fn stat_mismatches(repo: &TestRepo) -> Vec<String> {
         .filter(|p| !p.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-/// Stat data is trusted only when the source's ctime is at least a whole
-/// second older than `since`'s second, and a fixture has just been
-/// written. Tests that need its files trusted start two seconds on.
-fn wait_until_trusted() {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    std::thread::sleep(Duration::from_nanos(
-        2_000_000_000 - u64::from(now.subsec_nanos()),
-    ));
 }
 
 /// Zeroes the stat data of every entry, as `wtm new` finds the index.
