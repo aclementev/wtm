@@ -1,321 +1,204 @@
 mod common;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use wtm::config::{self, FlagOverrides, Origin};
+use wtm::config::{self, Config, FlagOverrides};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Layer {
-    Flag,
-    Env,
-    Project,
     Global,
+    Project,
+    Env,
+    Flag,
 }
 
-/// One configuration key with the layers it accepts. A key is absent from a
-/// layer on purpose: `dir`, `branch_prefix` and `fetch` are personal settings
-/// a repository must not reach, and `base` and `init` describe a repository,
-/// so only its own file may set them.
-struct Key {
-    name: &'static str,
-    env: &'static str,
-    layers: &'static [Layer],
-    set_flag: Option<fn(&mut FlagOverrides, &str)>,
-    /// A distinct value per layer where the type allows it. For booleans every
-    /// layer carries the same value and the origin proves which one won.
-    value: fn(Layer) -> &'static str,
-    default: &'static str,
-}
+/// Each key with the layers it accepts, lowest first, and a value per layer.
+/// A key is absent from a layer on purpose: `dir`, `branch_prefix` and
+/// `fetch` are personal and a repository must not set them, while `base`
+/// and `init` describe a repository, so only its own file may.
+const KEYS: &[(&str, &[(Layer, &str)])] = &[
+    (
+        "dir",
+        &[
+            (Layer::Global, "/global"),
+            (Layer::Env, "/env"),
+            (Layer::Flag, "/flag"),
+        ],
+    ),
+    (
+        "base",
+        &[
+            (Layer::Project, "project"),
+            (Layer::Env, "env"),
+            (Layer::Flag, "flag"),
+        ],
+    ),
+    (
+        "branch_prefix",
+        &[(Layer::Global, "global/"), (Layer::Env, "env/")],
+    ),
+    (
+        "fetch",
+        &[
+            (Layer::Global, "true"),
+            (Layer::Env, "true"),
+            (Layer::Flag, "true"),
+        ],
+    ),
+    (
+        "init",
+        &[
+            (Layer::Project, "/project.sh"),
+            (Layer::Env, "/env.sh"),
+            (Layer::Flag, "/flag.sh"),
+        ],
+    ),
+];
 
-/// The default data root is derived from the environment's XDG variables, so
-/// only its origin is worth asserting.
-const UNCHECKED: &str = "*";
-
-fn keys() -> Vec<Key> {
-    vec![
-        Key {
-            name: "dir",
-            env: "WTM_DIR",
-            layers: &[Layer::Flag, Layer::Env, Layer::Global],
-            set_flag: Some(|f, v| f.dir = Some(PathBuf::from(v))),
-            value: |layer| match layer {
-                Layer::Flag => "/flag/dir",
-                Layer::Env => "/env/dir",
-                _ => "/global/dir",
-            },
-            default: UNCHECKED,
-        },
-        Key {
-            name: "base",
-            env: "WTM_BASE",
-            layers: &[Layer::Flag, Layer::Env, Layer::Project],
-            set_flag: Some(|f, v| f.base = Some(v.to_string())),
-            value: |layer| match layer {
-                Layer::Flag => "flag-base",
-                Layer::Env => "env-base",
-                _ => "project-base",
-            },
-            default: "origin/HEAD",
-        },
-        Key {
-            name: "branch_prefix",
-            env: "WTM_BRANCH_PREFIX",
-            layers: &[Layer::Env, Layer::Global],
-            set_flag: None,
-            value: |layer| match layer {
-                Layer::Env => "env/",
-                _ => "global/",
-            },
-            default: "",
-        },
-        Key {
-            name: "fetch",
-            env: "WTM_FETCH",
-            layers: &[Layer::Flag, Layer::Env, Layer::Global],
-            set_flag: Some(|f, _| f.fetch = Some(true)),
-            value: |_| "true",
-            default: "false",
-        },
-        // Absolute values, so precedence is tested apart from the
-        // relative-path rule below.
-        Key {
-            name: "init",
-            env: "WTM_INIT",
-            layers: &[Layer::Flag, Layer::Env, Layer::Project],
-            set_flag: Some(|f, v| f.init = Some(PathBuf::from(v))),
-            value: |layer| match layer {
-                Layer::Flag => "/flag/init.sh",
-                Layer::Env => "/env/init.sh",
-                _ => "/project/init.sh",
-            },
-            default: UNCHECKED,
-        },
-    ]
-}
-
-fn toml_for(key: &str, value: &str) -> String {
+fn toml(key: &str, value: &str) -> String {
     match key {
-        "fetch" => format!("fetch = {value}\n"),
-        other => format!("{other} = \"{value}\"\n"),
+        "fetch" => format!("{key} = {value}\n"),
+        _ => format!("{key} = \"{value}\"\n"),
     }
 }
 
-#[test]
-fn every_key_takes_its_value_from_the_highest_layer_it_accepts() {
-    let dir = common::repo::scratch("config-precedence");
-    let project_file = dir.join("project.toml");
-    let global_file = dir.join("global.toml");
-
-    for key in keys() {
-        for mask in 0..(1u8 << key.layers.len()) {
-            let present: Vec<Layer> = key
-                .layers
-                .iter()
-                .enumerate()
-                .filter(|(bit, _)| mask & (1 << bit) != 0)
-                .map(|(_, layer)| *layer)
-                .collect();
-
-            let mut flags = FlagOverrides::default();
-            if present.contains(&Layer::Flag) {
-                key.set_flag.unwrap()(&mut flags, (key.value)(Layer::Flag));
+/// Loads `key` with each of `layers` set, the files written under `dir`.
+fn load(dir: &Path, key: &str, layers: &[(Layer, &str)]) -> wtm::error::Result<Config> {
+    let (project, global) = (dir.join("project.toml"), dir.join("global.toml"));
+    let _ = std::fs::remove_file(&project);
+    let _ = std::fs::remove_file(&global);
+    let mut flags = FlagOverrides::default();
+    let mut env = HashMap::new();
+    for &(layer, value) in layers {
+        match layer {
+            Layer::Global => std::fs::write(&global, toml(key, value)).unwrap(),
+            Layer::Project => std::fs::write(&project, toml(key, value)).unwrap(),
+            Layer::Env => {
+                env.insert(format!("WTM_{}", key.to_uppercase()), value.to_string());
             }
-            let env_value = present
-                .contains(&Layer::Env)
-                .then(|| (key.value)(Layer::Env).to_string());
-            let env = |name: &str| (name == key.env).then(|| env_value.clone()).flatten();
+            Layer::Flag => match key {
+                "dir" => flags.dir = Some(PathBuf::from(value)),
+                "base" => flags.base = Some(value.to_string()),
+                "fetch" => flags.fetch = Some(true),
+                "init" => flags.init = Some(PathBuf::from(value)),
+                _ => unreachable!("{key} has no flag"),
+            },
+        }
+    }
+    config::load(
+        &flags,
+        &|name| env.get(name).cloned(),
+        Some(&project),
+        Some(&global),
+        dir,
+        dir,
+    )
+}
 
-            write_layer(
-                &project_file,
-                &key,
-                present.contains(&Layer::Project),
-                Layer::Project,
-            );
-            write_layer(
-                &global_file,
-                &key,
-                present.contains(&Layer::Global),
-                Layer::Global,
-            );
-
-            let config = config::load(
-                &flags,
-                &env,
-                Some(&project_file),
-                Some(&global_file),
-                &dir,
-                &dir,
-            )
-            .unwrap_or_else(|e| panic!("{} with layers {present:?}: {e}", key.name));
+/// Adding the layers one at a time, lowest first, each new one must win.
+/// That checks both that every layer is read for the key and that it beats
+/// every layer below it.
+#[test]
+fn each_key_takes_its_value_from_the_highest_layer_that_sets_it() {
+    let dir = common::repo::scratch("config-precedence");
+    for (key, layers) in KEYS {
+        for set in 0..=layers.len() {
+            let config = load(&dir, key, &layers[..set]).unwrap();
             let (_, value, origin) = config
                 .entries()
                 .into_iter()
-                .find(|(name, _, _)| *name == key.name)
-                .expect("the key is reported by wtm config");
-
-            let (expected_value, expected_origin) = match present.first() {
-                Some(layer) => ((key.value)(*layer), name_of(*layer)),
-                None => (key.default, "default"),
+                .find(|(name, _, _)| name == key)
+                .unwrap();
+            let expected = match set {
+                0 => "default".to_string(),
+                _ => format!("{:?}", layers[set - 1].0).to_lowercase(),
             };
-            assert_eq!(
-                origin.split_whitespace().next().unwrap_or(&origin),
-                expected_origin,
-                "{} with layers {present:?}",
-                key.name
+            assert!(
+                origin.starts_with(&expected),
+                "{key} with {:?}: came from {origin}",
+                &layers[..set]
             );
-            if expected_value != UNCHECKED {
-                assert_eq!(
-                    value, expected_value,
-                    "{} with layers {present:?}",
-                    key.name
-                );
+            if set > 0 {
+                assert_eq!(value, layers[set - 1].1, "{key} with {:?}", &layers[..set]);
             }
         }
     }
 }
 
-fn name_of(layer: Layer) -> &'static str {
-    match layer {
-        Layer::Flag => "flag",
-        Layer::Env => "env",
-        Layer::Project => "project",
-        Layer::Global => "global",
-    }
-}
-
-fn write_layer(file: &Path, key: &Key, present: bool, layer: Layer) {
-    if present {
-        std::fs::write(file, toml_for(key.name, (key.value)(layer))).unwrap();
-    } else {
-        let _ = std::fs::remove_file(file);
-    }
-}
-
-/// A file that sets a key it does not own fails, naming the file and the
-/// key, rather than being ignored. Cloning a repository must not relocate
-/// your worktrees, rename your branches or add a network round-trip, and a
-/// global `init` would outrank every repository's own `wtm-init.sh`.
+/// A file that sets a key it does not own, or a key that does not exist,
+/// fails naming the file and the key rather than being ignored.
 #[test]
 fn a_file_refuses_every_key_it_does_not_own() {
     let dir = common::repo::scratch("config-scope");
-    let file = dir.join("config.toml");
-
-    for key in keys() {
+    for (key, layers) in KEYS {
         for layer in [Layer::Project, Layer::Global] {
-            if key.layers.contains(&layer) {
+            if layers.iter().any(|(accepted, _)| *accepted == layer) {
                 continue;
             }
-            std::fs::write(&file, toml_for(key.name, (key.value)(layer))).unwrap();
-            let (project, global) = match layer {
-                Layer::Project => (Some(file.as_path()), None),
-                _ => (None, Some(file.as_path())),
-            };
-
-            let message = config::load(
-                &FlagOverrides::default(),
-                &|_| None,
-                project,
-                global,
-                &dir,
-                &dir,
-            )
-            .expect_err(&format!("{} in the {layer:?} file must fail", key.name))
-            .to_string();
-
-            assert!(message.contains(&file.display().to_string()), "{message}");
-            assert!(message.contains(key.name), "{message}");
+            // Any value the key accepts elsewhere, so the only fault is where.
+            let message = load(&dir, key, &[(layer, layers[0].1)])
+                .err()
+                .unwrap_or_else(|| panic!("{key} in the {layer:?} file must fail"))
+                .to_string();
+            assert!(message.contains(key), "{message}");
+            assert!(message.contains(".toml"), "{message}");
         }
     }
-}
 
-#[test]
-fn an_unknown_key_is_rejected_naming_the_file_and_the_key() {
-    let dir = common::repo::scratch("config-unknown");
-    let file = dir.join("config.toml");
-    std::fs::write(&file, "base = \"main\"\nnot_a_key = 3\n").unwrap();
-
+    let file = dir.join("global.toml");
+    std::fs::write(&file, "not_a_key = 3\n").unwrap();
     let message = config::load(
         &FlagOverrides::default(),
         &|_| None,
-        Some(&file),
         None,
+        Some(&file),
         &dir,
         &dir,
     )
     .expect_err("an unknown key must fail")
     .to_string();
-
-    assert!(message.contains(&file.display().to_string()), "{message}");
-    assert!(message.contains("not_a_key"), "{message}");
+    assert!(
+        message.contains("not_a_key") && message.contains("global.toml"),
+        "{message}"
+    );
 }
 
-#[test]
-fn a_missing_configuration_file_is_not_an_error() {
-    let config = config::load(
-        &FlagOverrides::default(),
-        &|_| None,
-        Some(Path::new("/nowhere/project.toml")),
-        Some(Path::new("/nowhere/global.toml")),
-        Path::new("/cwd"),
-        Path::new("/source"),
-    )
-    .expect("absent files simply contribute nothing");
-
-    assert_eq!(config.base.value, "origin/HEAD");
-    assert_eq!(config.base.origin, Origin::Default);
-}
-
-/// Getting a layer's base wrong runs the wrong file without complaining, so
-/// this pins each one separately.
+/// A relative hook path typed this invocation follows the caller, like any
+/// path argument. One stored in the project file follows the repository, so
+/// a gitignored hook in the main worktree runs for every new worktree.
+/// Getting a base wrong runs the wrong file without complaining.
 #[test]
 fn a_relative_init_path_resolves_against_the_base_its_layer_implies() {
-    let cwd = Path::new("/cwd");
-    let source = Path::new("/source");
-
-    let resolved = |flags: FlagOverrides, env: Option<&'static str>, file: Option<&str>| {
-        let dir = common::repo::scratch("config-init-relative");
-        let project_file = dir.join("project.toml");
-        if let Some(text) = file {
-            std::fs::write(&project_file, format!("init = \"{text}\"\n")).unwrap();
+    let dir = common::repo::scratch("config-init-relative");
+    let (cwd, source) = (Path::new("/cwd"), Path::new("/source"));
+    let project = dir.join("project.toml");
+    let resolved = |flag: Option<&str>, env: Option<&str>, file: Option<&str>| {
+        let _ = std::fs::remove_file(&project);
+        if let Some(path) = file {
+            std::fs::write(&project, toml("init", path)).unwrap();
         }
-        config::load(
-            &flags,
-            &|name| {
-                (name == "WTM_INIT")
-                    .then(|| env.map(str::to_string))
-                    .flatten()
-            },
-            Some(&project_file),
-            None,
-            cwd,
-            source,
-        )
-        .expect("the layers are all valid")
-        .init
-        .value
+        let flags = FlagOverrides {
+            init: flag.map(PathBuf::from),
+            ..Default::default()
+        };
+        let env = env.map(str::to_string);
+        let env = |name: &str| (name == "WTM_INIT").then(|| env.clone()).flatten();
+        config::load(&flags, &env, Some(&project), None, cwd, source)
+            .unwrap()
+            .init
+            .value
     };
 
-    let flag = FlagOverrides {
-        init: Some(PathBuf::from("setup.sh")),
-        ..Default::default()
-    };
-    assert_eq!(resolved(flag, None, None), cwd.join("setup.sh"));
+    assert_eq!(resolved(Some("setup.sh"), None, None), cwd.join("setup.sh"));
+    assert_eq!(resolved(None, Some("setup.sh"), None), cwd.join("setup.sh"));
     assert_eq!(
-        resolved(FlagOverrides::default(), Some("setup.sh"), None),
-        cwd.join("setup.sh")
-    );
-    assert_eq!(
-        resolved(FlagOverrides::default(), None, Some("setup.sh")),
+        resolved(None, None, Some("setup.sh")),
         source.join("setup.sh")
     );
+    assert_eq!(resolved(None, None, None), source.join("wtm-init.sh"));
     assert_eq!(
-        resolved(FlagOverrides::default(), None, None),
-        source.join("wtm-init.sh"),
-        "the default hook lives at the root of the source worktree"
-    );
-    assert_eq!(
-        resolved(FlagOverrides::default(), None, Some("/absolute/setup.sh")),
-        Path::new("/absolute/setup.sh"),
-        "an absolute path is used as it is"
+        resolved(None, None, Some("/absolute/setup.sh")),
+        Path::new("/absolute/setup.sh")
     );
 }

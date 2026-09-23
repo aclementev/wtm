@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use common::repo::scratch;
 use common::{TestRepo, wait_until_trusted};
 use wtm::clone::index::{self, HashAlgo};
 use wtm::git::Oid;
@@ -18,14 +17,7 @@ const COMMITTED: &str = "deep/a/b/c/d/e/shared-prefix-1.txt";
 /// git's racy window, and git would verify its content no matter what stat
 /// data we wrote, so no test could tell good stat data from bad.
 fn fixture(label: &str, object_format: &str) -> TestRepo {
-    let root = scratch(label);
-    let repo = TestRepo {
-        main: root.join("repo"),
-        data: root.join("data"),
-        root,
-    };
-    fs::create_dir_all(&repo.main).unwrap();
-    fs::create_dir_all(&repo.data).unwrap();
+    let repo = TestRepo::empty(label);
     let format = format!("--object-format={object_format}");
     repo.git(&["init", "-q", "-b", "main", &format, "."]);
     repo.git(&["config", "user.email", "test@example.com"]);
@@ -269,18 +261,21 @@ fn a_damaged_index_is_refused() {
     assert!(index::entries(&flipped, algo).is_none());
 }
 
-/// Both creation paths must produce the same worktree, one of them with no
-/// index code of ours involved. An untouched file keeping the source's
-/// mtime shows the clone survived: a rewrite by git stamps the current time.
-#[cfg(target_os = "macos")]
+/// With and without the index fill, `wtm new` must give a clean worktree
+/// with HEAD's content where the source has changes, and must keep the
+/// clone. An untouched file keeping the source's mtime shows the clone
+/// survived: a rewrite by git stamps the current time. Without a warning
+/// the fill ran rather than falling back to git reading every file.
 #[test]
 fn creation_keeps_the_clone_with_and_without_the_fast_index() {
     let repo = fixture("index-e2e", "sha1");
+    if !repo.clones() {
+        eprintln!("skipped: the filesystem under target/tmp cannot clone");
+        return;
+    }
     repo.write("top.txt", "modified in the source\n");
     wait_until_trusted();
 
-    // Both ways git can end up reading every file say so in these words:
-    // the escape hatch, and an index the parser refused.
     for (name, disable) in [("fast", false), ("slow", true)] {
         let mut command = repo.wtm();
         command.args(["new", name, "--clone-mode", "cow"]);
@@ -290,14 +285,9 @@ fn creation_keeps_the_clone_with_and_without_the_fast_index() {
         let output = command.output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{name}: {stderr}");
-        assert_eq!(
-            stderr.contains("git will read every file"),
-            disable,
-            "{name}: {stderr}"
-        );
+        assert!(!stderr.contains("warning"), "{name}: {stderr}");
 
-        use std::os::unix::ffi::OsStrExt;
-        let dest = PathBuf::from(std::ffi::OsStr::from_bytes(output.stdout.trim_ascii_end()));
+        let dest = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim_end());
         assert_eq!(repo.git_in(&dest, &["status", "--porcelain"]), "", "{name}");
         assert_eq!(
             fs::read_to_string(dest.join("top.txt")).unwrap(),

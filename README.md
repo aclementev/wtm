@@ -58,9 +58,8 @@ cargo test
 ```
 
 The tests build real repositories under `target/tmp` and check `wtm`
-against git itself. Help text and the shell wrappers are
-[insta](https://insta.rs) snapshots, so after changing them run
-`cargo insta review`. The agent skill is `src/skill.md`, and a test checks
-that every command and flag it mentions exists. CI runs the suite on APFS,
-on XFS with reflinks, and on ext4, which covers the checkout fallback.
+against git itself: a new worktree must match what `git worktree add`
+produces, and the index must be one git trusts. The shell wrappers run in
+real zsh, bash and fish, so all three need to be installed. CI runs the
+suite on APFS, on XFS with reflinks, and on ext4, which has no cloning.
 `cargo doc --open` shows how the modules fit together.

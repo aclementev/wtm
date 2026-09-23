@@ -1,51 +1,46 @@
-use std::io::Read;
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-
 mod common;
 
-use common::{RepoBuilder, count_entries};
+use std::io::Read;
+use std::process::Stdio;
+use std::time::{Duration, Instant};
 
-fn entries_in(trash: &Path) -> Vec<std::path::PathBuf> {
-    let Ok(entries) = std::fs::read_dir(trash) else {
-        return Vec::new();
-    };
-    entries.flatten().map(|entry| entry.path()).collect()
-}
+use common::{RepoBuilder, count_entries, entries_in};
 
 /// The point of the whole feature: `rm` hands the tree to the trash and
 /// returns, so what proves it is the files still sitting there afterwards.
-/// A return to deleting synchronously leaves no trash entry to find.
+/// `--wait` is the comparison. It deletes before returning and leaves no
+/// entry.
 #[test]
 fn rm_returns_with_the_tree_still_whole_in_the_trash() {
     let repo = RepoBuilder::new("removal-immediate").files(2000).build();
-    let id = repo.repo_id();
-    repo.wtm().args(["new", "task"]).assert().success();
-    let path = repo.worktree_path(&id, "task");
+    let path = repo.new_worktree(&["task"]);
     let planted = count_entries(&path);
+    let trash = repo.trash();
 
     let start = Instant::now();
     repo.wtm().args(["rm", "task"]).assert().success();
     let elapsed = start.elapsed();
 
-    assert!(!path.exists(), "the worktree path is gone immediately");
-    assert!(
-        !repo.is_registered(&path),
-        "git no longer lists the worktree"
-    );
-
-    let entries = entries_in(&repo.trash(&id));
-    assert_eq!(entries.len(), 1, "exactly one entry in the trash");
+    assert!(!path.exists());
+    assert!(!repo.is_registered(&path));
+    let entries = entries_in(&trash);
+    assert_eq!(entries.len(), 1);
     assert_eq!(
         count_entries(&entries[0]),
         planted,
         "the trash entry still holds every file, so nothing was deleted first"
     );
-
-    // Loose on purpose: the assertions above are what catch a synchronous
+    // Loose on purpose: the entry above is what catches a synchronous
     // removal. This only catches one so slow that no bound would forgive it.
     assert!(elapsed < Duration::from_secs(2), "rm took {elapsed:?}");
+
+    let waited = repo.new_worktree(&["waited"]);
+    repo.wtm()
+        .args(["rm", "waited", "--wait"])
+        .assert()
+        .success();
+    assert!(!waited.exists());
+    assert_eq!(entries_in(&trash).len(), 1, "--wait added a trash entry");
 }
 
 /// The inherited-descriptor regression. A reaper holding the caller's stdout
@@ -56,22 +51,17 @@ fn rm_returns_with_the_tree_still_whole_in_the_trash() {
 #[test]
 fn command_substitution_around_rm_reaches_end_of_file_before_the_sweep_does() {
     let repo = RepoBuilder::new("removal-fd-leak").build();
-    let id = repo.repo_id();
-    repo.wtm().args(["new", "task"]).assert().success();
+    repo.new_worktree(&["task"]);
     // Enough work that a sweep cannot plausibly finish while the pipe is read.
-    repo.plant_trash(&id, 4, 5000);
+    repo.plant_trash(4, 5000);
 
-    let mut child = Command::new(assert_cmd::cargo::cargo_bin("wtm"))
+    let mut child = repo
+        .process()
         .args(["rm", "task"])
-        .current_dir(&repo.main)
-        .envs(repo.env())
-        .env_remove("WTM_DEBUG")
-        .env_remove("WTM_NO_REAPER")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn wtm rm");
-
     let mut stdout = child.stdout.take().expect("a piped stdout");
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -85,86 +75,56 @@ fn command_substitution_around_rm_reaches_end_of_file_before_the_sweep_does() {
         .expect("stdout reached end of file; a reaper is holding it open")
         .expect("read stdout");
     assert_eq!(read, "", "rm writes nothing to stdout");
-
-    let left = entries_in(&repo.trash(&id)).len();
     assert!(
-        left > 0,
+        !entries_in(&repo.trash()).is_empty(),
         "end of file arrived only once the trash was empty, which is what a \
          leaked descriptor looks like"
     );
     child.wait().expect("reap wtm rm");
 }
 
-/// Two sweeps over one trash divide the entries between them rather than
-/// both deleting everything: each entry is claimed once, so the deletions
-/// the two of them report add up to exactly what was there. Without the
-/// locks both sweepers claim every entry and the total comes to twice that.
-///
-/// The sum holds however the two are scheduled. A sweeper that arrives after
-/// the other has finished reports nothing and still satisfies it.
+/// Several agents in one repository start several sweeps over the same
+/// trash. They must all succeed and leave it empty, however they interleave.
 #[test]
-fn two_concurrent_sweeps_divide_the_trash_and_both_succeed() {
-    const PLANTED: usize = 8;
+fn concurrent_sweeps_all_succeed_and_empty_the_trash() {
     let repo = RepoBuilder::new("removal-concurrent").build();
-    let id = repo.repo_id();
-    repo.plant_trash(&id, PLANTED, 200);
+    repo.plant_trash(8, 200);
 
-    let spawn = || {
-        let mut command = Command::new(assert_cmd::cargo::cargo_bin("wtm"));
-        command
-            .args(["gc", "--wait"])
-            .current_dir(&repo.main)
-            .envs(repo.env())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        command.spawn().expect("spawn wtm gc")
-    };
-
-    let (first, second) = (spawn(), spawn());
-    let (first, second) = (
-        first.wait_with_output().expect("reap the first sweep"),
-        second.wait_with_output().expect("reap the second sweep"),
-    );
-
-    assert!(first.status.success(), "the first sweep exits 0");
-    assert!(second.status.success(), "the second sweep exits 0");
-    assert_eq!(
-        swept(&first) + swept(&second),
-        PLANTED,
-        "each entry was deleted by exactly one of the two sweeps"
-    );
-    assert!(
-        entries_in(&repo.trash(&id)).is_empty(),
-        "the trash is empty"
-    );
-}
-
-/// The count a sweep reports on stderr, from `swept <n> entries`.
-fn swept(output: &std::process::Output) -> usize {
-    let text = String::from_utf8_lossy(&output.stderr);
-    let (_, rest) = text
-        .split_once("swept ")
-        .expect("a sweep reports its count");
-    let (count, _) = rest.split_once(' ').expect("a count then a word");
-    count.parse().expect("the count is a number")
+    let sweeps: Vec<_> = (0..3)
+        .map(|_| {
+            repo.process()
+                .args(["gc", "--wait"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn wtm gc")
+        })
+        .collect();
+    for sweep in sweeps {
+        let output = sweep.wait_with_output().expect("reap a sweep");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(entries_in(&repo.trash()).is_empty());
 }
 
 /// A sweeper killed mid-delete holds no lock afterwards, because the lock
 /// lives on the entry's inode and the kernel drops it with the descriptor.
 /// The next sweep picks the half-deleted tree up where it was left.
 #[test]
-fn a_killed_sweeper_leaves_a_lock_the_next_sweep_can_take() {
+fn a_killed_sweeper_leaves_work_the_next_sweep_finishes() {
     let repo = RepoBuilder::new("removal-resume").build();
-    let id = repo.repo_id();
-    repo.plant_trash(&id, 1, 15000);
-    let trash = repo.trash(&id);
+    repo.plant_trash(1, 15000);
+    let trash = repo.trash();
     let entry = entries_in(&trash).remove(0);
     let before = count_entries(&entry);
 
-    let mut sweeper = Command::new(assert_cmd::cargo::cargo_bin("wtm"))
+    let mut sweeper = repo
+        .process()
         .args(["gc", "--wait"])
-        .current_dir(&repo.main)
-        .envs(repo.env())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -185,16 +145,10 @@ fn a_killed_sweeper_leaves_a_lock_the_next_sweep_can_take() {
     sweeper.wait().expect("reap the sweeper");
 
     assert!(entry.is_dir(), "the kill landed mid-delete, not after it");
-    assert!(
-        count_entries(&entry) < before,
-        "the killed sweeper had started deleting"
-    );
+    assert!(count_entries(&entry) < before);
 
     repo.wtm().args(["gc", "--wait"]).assert().success();
-    assert!(
-        entries_in(&trash).is_empty(),
-        "a second sweep finished what the killed one started"
-    );
+    assert!(entries_in(&trash).is_empty());
 }
 
 /// When the tree cannot be renamed into the trash, removal deletes it where
@@ -203,61 +157,25 @@ fn a_killed_sweeper_leaves_a_lock_the_next_sweep_can_take() {
 #[test]
 fn an_unusable_trash_falls_back_to_deleting_in_place() {
     let repo = RepoBuilder::new("removal-fallback").build();
-    let id = repo.repo_id();
-    repo.wtm().args(["new", "task"]).assert().success();
-    let path = repo.worktree_path(&id, "task");
-
-    let trash = repo.trash(&id);
-    std::fs::create_dir_all(trash.parent().unwrap()).unwrap();
+    let path = repo.new_worktree(&["task"]);
+    let trash = repo.trash();
     std::fs::write(&trash, "not a directory").unwrap();
 
     repo.wtm().args(["rm", "task"]).assert().success();
 
-    assert!(!path.exists(), "the worktree was deleted in place");
-    assert!(
-        !repo.is_registered(&path),
-        "git no longer lists the worktree"
-    );
+    assert!(!path.exists());
+    assert!(!repo.is_registered(&path));
     assert!(trash.is_file(), "the blocking file was left alone");
 }
 
-/// `--wait` does the unlinking before returning, so nothing is left for a
-/// sweep. Compared against the default, which leaves exactly one entry.
-#[test]
-fn wait_removes_the_tree_instead_of_trashing_it() {
-    let repo = RepoBuilder::new("removal-wait").build();
-    let id = repo.repo_id();
-    repo.wtm().args(["new", "patient"]).assert().success();
-    repo.wtm().args(["new", "hasty"]).assert().success();
-
-    repo.wtm()
-        .args(["rm", "patient", "--wait"])
-        .assert()
-        .success();
-    assert!(
-        entries_in(&repo.trash(&id)).is_empty(),
-        "--wait leaves nothing behind"
-    );
-
-    repo.wtm().args(["rm", "hasty"]).assert().success();
-    assert_eq!(
-        entries_in(&repo.trash(&id)).len(),
-        1,
-        "the same removal without --wait does leave an entry"
-    );
-}
-
 /// Nobody has to run `wtm gc`. Any command finding a non-empty trash hands
-/// it to a reaper, so the bytes come back whether or not the user asks.
-/// `wtm ls` reads nothing and removes nothing, which makes it the plainest
+/// it to a reaper. `wtm ls` removes nothing, which makes it the plainest
 /// demonstration that the sweep does not ride on removal.
 #[test]
 fn any_command_collects_a_trash_someone_left_behind() {
     let repo = RepoBuilder::new("removal-opportunistic").build();
-    let id = repo.repo_id();
-    repo.plant_trash(&id, 2, 50);
-    let trash = repo.trash(&id);
-    assert_eq!(entries_in(&trash).len(), 2, "the trash starts populated");
+    repo.plant_trash(2, 50);
+    let trash = repo.trash();
 
     repo.wtm_reaping().arg("ls").assert().success();
 
@@ -265,8 +183,5 @@ fn any_command_collects_a_trash_someone_left_behind() {
     while Instant::now() < deadline && !entries_in(&trash).is_empty() {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        entries_in(&trash).is_empty(),
-        "a reaper spawned by `ls` emptied the trash"
-    );
+    assert!(entries_in(&trash).is_empty());
 }

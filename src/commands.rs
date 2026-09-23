@@ -288,9 +288,8 @@ pub fn doctor(ui: &Ui, repo: &Repo, json: bool) -> Result<i32> {
     let unavailable = clone::unavailable(source, probe_dir);
     let (method, reason) = match &unavailable {
         None => ("cow", "clones with copy-on-write".to_string()),
-        Some(why) => ("checkout", format!("checks out: {}", why.reason)),
+        Some(why) => ("checkout", format!("checks out: {why}")),
     };
-    let sparse = source.is_some_and(clone::is_sparse);
     let submodules = source.map_or(0, |source| {
         git::gitlinks(source).map_or(0, |list| list.len())
     });
@@ -310,7 +309,6 @@ pub fn doctor(ui: &Ui, repo: &Repo, json: bool) -> Result<i32> {
                 "data_root": { "path": root, "device": root_device },
                 "same_filesystem": same_filesystem,
                 "method": { "method": method, "reason": reason },
-                "sparse": sparse,
                 "submodules": submodules,
                 "include": include.as_ref().map(|(file, matches)| json!({
                     "file": file, "exists": file.exists(), "matches": matches,
@@ -339,7 +337,6 @@ pub fn doctor(ui: &Ui, repo: &Repo, json: bool) -> Result<i32> {
                 repo.main.display().to_string()
             },
         ],
-        vec!["sparse".into(), if sparse { "yes" } else { "no" }.into()],
         vec!["submodules".into(), submodules.to_string()],
         vec!["include".into(), describe_include(include)],
         vec!["method".into(), reason],
