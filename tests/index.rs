@@ -100,13 +100,13 @@ fn stat_mismatches(repo: &TestRepo) -> Vec<String> {
         .collect()
 }
 
-/// Stat data is trusted only when the source's ctime is whole seconds
-/// older than `since`, and a fixture has just been written. Tests that
-/// need its files trusted start on the next second.
-fn wait_for_next_second() {
+/// Stat data is trusted only when the source's ctime is at least a whole
+/// second older than `since`'s second, and a fixture has just been
+/// written. Tests that need its files trusted start two seconds on.
+fn wait_until_trusted() {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     std::thread::sleep(Duration::from_nanos(
-        1_000_000_000 - u64::from(now.subsec_nanos()),
+        2_000_000_000 - u64::from(now.subsec_nanos()),
     ));
 }
 
@@ -169,7 +169,7 @@ fn a_filled_index_leaves_git_nothing_to_verify_and_git_still_sees_changes() {
         zeroed_index(&repo, version);
         fs::remove_file(repo.main.join("top.txt")).unwrap();
 
-        let since = SystemTime::now() + Duration::from_secs(1);
+        let since = SystemTime::now() + Duration::from_secs(2);
         let filled = index::fill_stat(
             &index_path(&repo),
             &repo.main,
@@ -212,7 +212,7 @@ fn the_mode_comes_from_head_and_not_the_filesystem() {
     zeroed_index(&repo, 2);
     fs::set_permissions(repo.main.join("a"), fs::Permissions::from_mode(0o755)).unwrap();
 
-    let since = SystemTime::now() + Duration::from_secs(1);
+    let since = SystemTime::now() + Duration::from_secs(2);
     index::fill_stat(
         &index_path(&repo),
         &repo.main,
@@ -233,7 +233,7 @@ fn the_mode_comes_from_head_and_not_the_filesystem() {
 fn a_file_changed_after_since_is_left_for_git_to_check() {
     let repo = fixture("index-race", "sha1");
     zeroed_index(&repo, 2);
-    wait_for_next_second();
+    wait_until_trusted();
 
     let since = SystemTime::now();
     let path = repo.main.join(COMMITTED);
@@ -287,7 +287,7 @@ fn a_damaged_index_is_refused() {
 fn creation_keeps_the_clone_with_and_without_the_fast_index() {
     let repo = fixture("index-e2e", "sha1");
     repo.write("top.txt", "modified in the source\n");
-    wait_for_next_second();
+    wait_until_trusted();
 
     for (name, disable, expected) in [
         ("fast", false, "filled stat data for"),

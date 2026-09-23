@@ -87,9 +87,12 @@ pub fn fill_stat(
     let Some(entries) = entries(&bytes, algo) else {
         return Ok(None);
     };
+    // One second earlier than asked. The kernel stamps ctime from a clock
+    // that runs up to a tick behind the one `since` was read from, so a
+    // change made just after `since` can carry a ctime in the second before.
     let since = since
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+        .map_or(0, |d| d.as_secs() as i64 - 1);
 
     let stats = trusted_stats(&entries, dest, source, since);
     let mut filled = 0;
@@ -145,7 +148,8 @@ fn trusted_stats(
 /// so a source ctime older than `since` means it is still unchanged. We
 /// check ctime because nothing can set it back, so an edit that restores
 /// the old mtime still moves it. Whole seconds, because a filesystem with
-/// coarse timestamps rounds a later change down to before `since`.
+/// coarse timestamps rounds a later change down to before `since`, and
+/// `since` has already been moved a second earlier for the kernel's clock.
 /// Requiring the clone's mtime to be older too keeps every filled entry
 /// out of git's racy window, since the index is written after `since`.
 ///
