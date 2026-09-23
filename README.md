@@ -11,6 +11,21 @@ sparse checkout, no virtual filesystem and no daemon.
 
 ## Install
 
+Download a prebuilt binary from
+[Releases](https://github.com/aclementev/wtm/releases), for macOS on Apple
+silicon (`aarch64-apple-darwin`) or Linux on x86_64 or ARM (the `musl`
+builds, which run on any distribution). For example:
+
+```sh
+curl -fsSL https://github.com/aclementev/wtm/releases/latest/download/wtm-aarch64-apple-darwin.tar.gz | tar xz -C ~/.local/bin wtm
+```
+
+The binaries are not notarized. If you download one with a browser on
+macOS, clear the quarantine flag before running it with
+`xattr -d com.apple.quarantine wtm`. A `curl` download needs no such step.
+
+Or build from source:
+
 ```sh
 cargo install --git https://github.com/aclementev/wtm
 ```
