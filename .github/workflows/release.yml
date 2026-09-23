@@ -1,0 +1,104 @@
+name: Release
+
+# Run by hand from the Actions tab. Bump the version in Cargo.toml first:
+# the release is tagged from it, so `wtm --version` and the tag always agree.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      # `shell: bash` turns on pipefail, so a failing `cargo metadata` stops
+      # here instead of handing jq nothing and tagging a release `v`.
+      - id: tag
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Releases come from main, and this run is on $GITHUB_REF. Pick main in the branch menu of Run workflow."
+            exit 1
+          fi
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          tag="v$version"
+          # The tag, not the release, is what must not exist: `gh release
+          # create` on an existing tag would publish new binaries against
+          # the old commit.
+          existing=$(git ls-remote --tags origin "refs/tags/$tag")
+          if [ -n "$existing" ]; then
+            echo "::error::$tag is already released. Bump the version in Cargo.toml, merge it, and run the release again."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: [version, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # musl links statically, so one binary runs on any distribution
+          # instead of only those with a glibc at least as new as the runner's.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # No rust-cache here. A release builds from a clean slate so nothing a
+      # branch push left in the shared cache can end up in the binary.
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check the binary runs and reports the tagged version
+        run: |
+          out=$(target/${{ matrix.target }}/release/wtm --version)
+          echo "$out"
+          [ "$out" = "wtm ${TAG#v}" ]
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+      # A tarball keeps the executable bit, which a bare binary loses on
+      # download, and carries the LICENSE that MIT asks to travel with every
+      # copy. The name carries no version so that
+      # releases/latest/download/<name> is a URL the README can link to.
+      - run: tar czf wtm-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release wtm -C "$PWD" LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wtm-${{ matrix.target }}
+          path: wtm-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  # Runs only once every build has passed, so a failure leaves no tag and no
+  # half-filled release behind.
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - run: sha256sum wtm-*.tar.gz > SHA256SUMS
+      - run: |
+          gh release create "$TAG" wtm-*.tar.gz SHA256SUMS \
+            --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
