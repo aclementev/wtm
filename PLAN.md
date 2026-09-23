@@ -60,8 +60,8 @@ Done when: removal returns in under 200 ms on the test repository and the
 path is gone; command substitution around it does not hang, which is the
 inherited-descriptor regression; a dirty worktree exits 4 and `--force`
 removes it; two concurrent sweeps both exit 0 and empty the trash; a
-sweeper killed mid-delete leaves a lock the next sweep can take; a trash on
-another filesystem falls back to a synchronous delete.
+sweeper killed mid-delete leaves a lock the next sweep can take; a trash
+that cannot be renamed into falls back to a synchronous delete.
 
 ## 4. Creation uses copy-on-write
 
