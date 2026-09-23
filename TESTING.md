@@ -10,22 +10,21 @@ struct with no invariants) are not written.
 ## 1. Test infrastructure
 
 - `tests/common/repo.rs`: a builder that creates a small git repo in a
-  temporary directory: `RepoBuilder::new().files(n).ignored("node_modules", 50)
-  .scattered_ignored("__pycache__", 20).symlink_to_dir().submodule().dirty_file()
-  .include(".env.local").build()`. Deterministic content from a seed.
+  temporary directory: `RepoBuilder::new(label).files(n).ignored("node_modules", 50)
+  .symlink_to_dir().submodule().dirty_file().build()`, with fixed content.
 - Temporary directories live under `target/tmp/`, which `cargo clean`
   removes and no other user shares. On macOS this is not about volumes:
   `/private/tmp` and `$TMPDIR` are on the same data volume as `$HOME` and
   clone from it perfectly well.
-- A `TestGit` helper runs git with the same scrubbed environment as the
+- `TestRepo::git` runs git with the same scrubbed environment as the
   binary, so oracle and subject see identical repos.
 - The binary is exercised through `assert_cmd` for end-to-end tests and
   through the library crate for module tests. Keep `main.rs` thin so the
   library covers everything.
-- CI matrix: macOS (APFS, CoW path), Linux with a btrfs loop mount (reflink
+- CI matrix: macOS (APFS, CoW path), Linux with an XFS loop mount (reflink
   path), Linux ext4 (must take the checkout path and still pass every
-  behavioural test). The same behavioural suite runs on all three; only
-  `WalkStats` expectations differ.
+  behavioural test). The same suite runs on all three; the tests that only
+  mean something on the CoW path say so when they do not run.
 
 ## 2. Differential tests against git (the core)
 
@@ -97,20 +96,14 @@ time, a clone does not.
 ## 3. Property tests for pure logic
 
 - `WorktreeName`: for arbitrary strings, either parsing fails or
-  `layout.worktree_dir(id, name)` canonicalizes to a path strictly inside
-  `layout.repo_dir(id)`, has no `..` components, and `trash_stem` contains
-  no `/`. Also: parse is idempotent and round-trips through `Display`.
+  `Workspace::dir` gives a path strictly inside `Workspace::repo_dir` with
+  no `..` components. Also: parsing is idempotent, and `name_of` recovers
+  the name from the path `dir` gives.
 - `ExcludeSet::from_lists`: the invariants in `ARCHITECTURE.md` 3.5, checked
   over random path sets: every ancestor of an included path is `Recurse`,
   so the walk can reach it; a descendant of an excluded path that is not
   itself included is `Skip`, so the walk never visits it; an included path
   is `CloneWhole` however deep inside an excluded tree it sits.
-- `Walker` against the `fake` cloner on a random tree with a random
-  `ExcludeSet`: the destination equals the source minus excluded paths plus
-  included ones, and `dirs_recursed` never exceeds the number of `Recurse`
-  nodes plus one, which is what fails if the walk stops collapsing whole
-  directories and quietly becomes a file-by-file copy. This runs on any filesystem and is the fast
-  test for the walk logic; 2.3 is the slow one that also covers git.
 - Derivations (`DESIGN.md` 2.2), one test each, since these replace stored
   state: the creation time read from the worktree directory's birth time is
   within a second of the clock at creation; the base derived by merge-base
@@ -225,17 +218,9 @@ exit code 3; `wtm init` with a fixed hook then exits 0.
   output, so it is a guard against future diagnostics reaching the wrong
   stream rather than coverage of anything today.
 
-## 7. Performance guard
-
-One `#[ignore]` benchmark test builds a 100k-file repo and asserts `wtm new`
-is not more than 30% slower than `git worktree add -c checkout.workers=8`
-and that the first `git status` takes under one second. Run in CI nightly,
-not per commit. The research scripts under `research/git/` remain the
-reference for anything slower than expected.
-
-## 8. What not to test
+## 7. What not to test
 
 Clap parsing of individual flags (the snapshot covers the surface), serde
-round-trips of plain structs, `Layout` path joins, and anything that only
+round-trips of plain structs, `Workspace` path joins, and anything that only
 restates the implementation. If a test would pass with the function body
 replaced by the obvious wrong thing, it is not worth keeping.

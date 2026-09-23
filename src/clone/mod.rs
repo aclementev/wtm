@@ -11,7 +11,6 @@ use crate::ui::Ui;
 
 #[cfg(target_os = "macos")]
 mod apfs;
-pub mod fake;
 #[cfg(target_os = "linux")]
 mod reflink;
 
@@ -200,9 +199,9 @@ pub fn device_of(path: &Path) -> Option<u64> {
     fs::metadata(nearest_existing(path)?).ok().map(|m| m.dev())
 }
 
-/// What the walk did. Its only reader is the test that fails when the walk
-/// stops collapsing whole directories and quietly becomes a file-by-file
-/// copy.
+/// What the walk did, reported at progress level. A walk that stops
+/// collapsing whole directories shows here as a count of recursions close
+/// to the number of directories.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WalkStats {
     pub tree_clones: u64,

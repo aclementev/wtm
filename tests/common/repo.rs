@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Temporary directories live under `target/tmp` rather than `/tmp`: on macOS
-/// `/tmp` is a separate APFS volume, and cloning across volumes fails.
+/// Temporary directories live under `target/tmp` rather than `/tmp`, so
+/// `cargo clean` takes them with it and CI can mount a filesystem that
+/// clones there.
 pub fn scratch(label: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);

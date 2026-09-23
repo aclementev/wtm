@@ -75,7 +75,7 @@ impl GitWorktree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitVersion {
     pub major: u32,
     pub minor: u32,
@@ -84,20 +84,15 @@ pub struct GitVersion {
 
 /// Every git invocation in `wtm` goes through here. Nothing else spawns git.
 pub struct Git {
-    exe: PathBuf,
     version: GitVersion,
 }
 
 impl Git {
     pub fn new() -> Result<Git> {
-        let exe = PathBuf::from(std::env::var_os("WTM_GIT").unwrap_or_else(|| "git".into()));
-        let git = Git {
-            exe,
-            version: GitVersion {
-                major: 0,
-                minor: 0,
-                raw: String::new(),
-            },
+        // The version is not known until git has answered, so the one call
+        // that asks goes through a `Git` that does not know it yet.
+        let mut git = Git {
+            version: GitVersion::default(),
         };
         let version = parse_version(&git.stdout(Path::new("."), &["--version"])?)?;
         if (version.major, version.minor) < MIN_VERSION {
@@ -106,7 +101,8 @@ impl Git {
                 needed: format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1),
             });
         }
-        Ok(Git { version, ..git })
+        git.version = version;
+        Ok(git)
     }
 
     pub fn version(&self) -> &GitVersion {
@@ -116,7 +112,7 @@ impl Git {
     /// Stdout is always captured, never inherited. It is the one stream
     /// `wtm` keeps clear of anything but its own result.
     fn command(&self, cwd: &Path, args: &[&str]) -> Command {
-        let mut cmd = Command::new(&self.exe);
+        let mut cmd = Command::new("git");
         cmd.arg("-C").arg(cwd).args(args);
         cmd.stdin(Stdio::null());
         for key in SCRUBBED {
@@ -131,7 +127,7 @@ impl Git {
         let output = self
             .command(cwd, args)
             .output()
-            .map_err(|e| Error::io(&self.exe, e))?;
+            .map_err(|e| Error::io("git", e))?;
         if !output.status.success() {
             return Err(Error::Git {
                 args: args.iter().map(|a| a.to_string()).collect(),
