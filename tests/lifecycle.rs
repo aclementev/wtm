@@ -205,42 +205,46 @@ fn a_usage_error_exits_two() {
 
 /// A real failure at the last step that can fail, when the tree is fully
 /// populated: an untracked file carried by `.worktreeinclude` is one the
-/// base tracks, so git refuses to switch to it. Whatever failed earlier
-/// left a subset of this to clean up.
+/// base tracks. On the clone path git refuses to switch over it, and on the
+/// checkout path the include copy refuses to overwrite it. Whatever failed
+/// earlier left a subset of this to clean up.
 #[test]
 fn a_failed_creation_leaves_nothing_behind_and_allows_a_retry() {
-    let repo = RepoBuilder::new("lifecycle-rollback").build();
-    repo.git(&["checkout", "-q", "-b", "base"]);
-    repo.write("conf.local", "tracked on base\n");
-    repo.git(&["add", "conf.local"]);
-    repo.git(&["commit", "-q", "-m", "track conf.local"]);
-    repo.git(&["checkout", "-q", "main"]);
-    repo.write(".worktreeinclude", "conf.local\n");
-    repo.git(&["add", ".worktreeinclude"]);
-    repo.git(&["commit", "-q", "-m", "carry conf.local"]);
-    repo.write("conf.local", "untracked on main\n");
+    for mode in ["auto", "checkout"] {
+        let repo = RepoBuilder::new(&format!("lifecycle-rollback-{mode}")).build();
+        repo.git(&["checkout", "-q", "-b", "base"]);
+        repo.write("conf.local", "tracked on base\n");
+        repo.git(&["add", "conf.local"]);
+        repo.git(&["commit", "-q", "-m", "track conf.local"]);
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write(".worktreeinclude", "conf.local\n");
+        repo.git(&["add", ".worktreeinclude"]);
+        repo.git(&["commit", "-q", "-m", "carry conf.local"]);
+        repo.write("conf.local", "untracked on main\n");
+        let new = ["new", "feat/task", "--base", "base", "--clone-mode", mode];
 
-    repo.wtm()
-        .args(["new", "feat/task", "--base", "base"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("conf.local"));
+        repo.wtm()
+            .args(new)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("conf.local"));
 
-    assert_eq!(
-        std::fs::read_dir(&repo.data).unwrap().count(),
-        0,
-        "the data root kept a directory"
-    );
-    assert!(!repo.git(&["worktree", "list"]).contains("feat/task"));
-    let metadata = std::fs::read_dir(repo.main.join(".git/worktrees")).map_or(0, |d| d.count());
-    assert_eq!(metadata, 0, "git kept metadata for the worktree");
-    assert!(repo.git(&["branch", "--list", "feat/task"]).is_empty());
+        assert_eq!(
+            std::fs::read_dir(&repo.data).unwrap().count(),
+            0,
+            "{mode}: the data root kept a directory"
+        );
+        assert!(!repo.git(&["worktree", "list"]).contains("feat/task"));
+        let metadata = std::fs::read_dir(repo.main.join(".git/worktrees")).map_or(0, |d| d.count());
+        assert_eq!(metadata, 0, "{mode}: git kept metadata for the worktree");
+        assert!(
+            repo.git(&["branch", "--list", "feat/task"]).is_empty(),
+            "{mode}: the branch was left behind"
+        );
 
-    std::fs::remove_file(repo.main.join("conf.local")).unwrap();
-    repo.wtm()
-        .args(["new", "feat/task", "--base", "base"])
-        .assert()
-        .success();
+        std::fs::remove_file(repo.main.join("conf.local")).unwrap();
+        repo.wtm().args(new).assert().success();
+    }
 }
 
 /// A bare clone with linked worktrees is the layout people reach for when
