@@ -152,6 +152,12 @@ impl TestRepo {
     /// Runs git with the same scrubbed environment as the binary, so oracle
     /// and subject always see the same repository.
     pub fn git_in(&self, cwd: &Path, args: &[&str]) -> String {
+        // A path read from a failed `wtm` run is empty, and `git -C ""` runs
+        // in the test process's directory, which is this crate's own checkout.
+        assert!(
+            cwd.starts_with(&self.root),
+            "git would run outside the test's scratch directory, in {cwd:?}"
+        );
         let mut command = Command::new("git");
         command.arg("-C").arg(cwd).args(args).envs(self.env());
         for key in [
@@ -223,6 +229,14 @@ impl TestRepo {
         command
     }
 
+    /// Runs `wtm` and returns its stdout, failing the test with `wtm`'s stderr
+    /// when it exits non-zero. The output of a failed run is empty, and a test
+    /// that used it as a path would act on this crate's own checkout.
+    pub fn wtm_stdout(&self, args: &[&str]) -> String {
+        let assert = self.wtm().args(args).assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 output")
+    }
+
     /// As `wtm`, but background reapers are left switched on.
     pub fn wtm_reaping(&self) -> assert_cmd::Command {
         let mut command = assert_cmd::Command::cargo_bin("wtm").expect("build wtm");
@@ -266,8 +280,8 @@ impl TestRepo {
     /// The repo id `wtm` computes for this repository, read back from the tool
     /// rather than recomputed, so tests never duplicate the formula.
     pub fn repo_id(&self) -> String {
-        let output = self.wtm().args(["doctor", "--json"]).output().unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&self.wtm_stdout(&["doctor", "--json"])).unwrap();
         json["repo"]["id"].as_str().unwrap().to_string()
     }
 }

@@ -8,8 +8,8 @@ use wtm::git;
 // These replace stored state. Every one is a fact `wtm` could have written
 // down and instead derives.
 
-fn json(output: Vec<u8>) -> serde_json::Value {
-    serde_json::from_slice(&output).expect("json output")
+fn json(output: String) -> serde_json::Value {
+    serde_json::from_str(&output).expect("json output")
 }
 
 #[test]
@@ -25,7 +25,7 @@ fn creation_time_comes_from_gits_metadata_directory() {
         .unwrap()
         .as_secs();
 
-    let listing = json(repo.wtm().args(["ls", "--json"]).output().unwrap().stdout);
+    let listing = json(repo.wtm_stdout(&["ls", "--json"]));
     let created = listing[0]["created"].as_u64().expect("a creation time");
 
     assert!(
@@ -49,7 +49,7 @@ fn base_is_the_merge_base_with_the_default_branch_for_a_tag_or_a_raw_sha() {
             .success();
     }
 
-    let listing = json(repo.wtm().args(["ls", "--json"]).output().unwrap().stdout);
+    let listing = json(repo.wtm_stdout(&["ls", "--json"]));
     for worktree in listing.as_array().unwrap() {
         assert_eq!(
             worktree["base"].as_str(),
@@ -83,7 +83,7 @@ fn gits_metadata_directory_name_is_read_back_and_never_computed() {
 
     // Both are still listed with a creation time, which is the fact that
     // depends on resolving the metadata directory correctly.
-    let listing = json(repo.wtm().args(["ls", "--json"]).output().unwrap().stdout);
+    let listing = json(repo.wtm_stdout(&["ls", "--json"]));
     let listing = listing.as_array().unwrap();
     assert_eq!(listing.len(), 2);
     assert!(listing.iter().all(|w| w["created"].as_u64().is_some()));

@@ -268,7 +268,7 @@ fn a_cloned_worktree_keeps_the_source_mtime_of_an_untouched_file() {
 
 /// The method `wtm new` would pick here, asked of `wtm` itself.
 fn clones(repo: &TestRepo) -> bool {
-    let output = repo.wtm().args(["doctor", "--json"]).output().unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&repo.wtm_stdout(&["doctor", "--json"])).unwrap();
     json["method"]["method"] == "cow"
 }

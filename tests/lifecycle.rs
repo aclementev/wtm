@@ -35,8 +35,10 @@ fn stdout_carries_only_the_path_even_with_debugging_on() {
         .wtm()
         .env("WTM_DEBUG", "1")
         .args(["new", "noisy"])
-        .output()
-        .unwrap();
+        .assert()
+        .success()
+        .get_output()
+        .clone();
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(stdout.lines().count(), 1, "stdout was {stdout:?}");
@@ -53,8 +55,7 @@ fn ls_reports_the_worktree_with_branch_base_and_age() {
     repo.wtm().args(["new", "feat/login"]).assert().success();
 
     let head = repo.git(&["rev-parse", "HEAD"]);
-    let output = repo.wtm().arg("ls").output().unwrap();
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = repo.wtm_stdout(&["ls"]);
     let line = stdout.lines().next().expect("one worktree listed");
 
     assert!(line.starts_with("feat/login"), "{line}");
@@ -171,8 +172,7 @@ fn new_refuses_a_branch_that_is_checked_out_elsewhere() {
 #[test]
 fn new_reuses_an_existing_branch_as_it_is_and_refuses_an_explicit_base() {
     let repo = RepoBuilder::new("lifecycle-reuse").build();
-    let path = repo.wtm().args(["new", "resume"]).output().unwrap().stdout;
-    let path = PathBuf::from(String::from_utf8(path).unwrap().trim_end());
+    let path = PathBuf::from(repo.wtm_stdout(&["new", "resume"]).trim_end());
     std::fs::write(path.join("progress.txt"), "half done\n").unwrap();
     repo.git_in(&path, &["add", "progress.txt"]);
     repo.git_in(&path, &["commit", "-q", "-m", "half done"]);
