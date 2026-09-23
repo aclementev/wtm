@@ -205,12 +205,27 @@ fn make(
         clone::populate(ui, main, dest)?;
         // Git now rewrites only the files that differ between the source's
         // commit and the base.
-        switch(ui, dest, branch, base, false)?;
+        let target = match base {
+            Some(base) => vec!["-b", branch, base.as_str()],
+            None => vec![branch],
+        };
+        checkout(ui, dest, &target, false)?;
         return Ok("cloned");
     }
-    switch(ui, dest, branch, base, true)?;
+
+    // HEAD is already where the worktree ends, so the full checkout names no
+    // branch, and creating one afterwards writes nothing. That keeps it the
+    // last step that can fail, after the include copy, which can refuse.
+    let target = match base {
+        Some(_) => vec![],
+        None => vec![branch],
+    };
+    checkout(ui, dest, &target, true)?;
     if !repo.bare {
         clone::copy_included(main, dest)?;
+    }
+    if base.is_some() {
+        checkout(ui, dest, &["-b", branch], false)?;
     }
     Ok("checked out")
 }
@@ -236,10 +251,10 @@ fn use_clone(ui: &Ui, mode: CloneMode, source: Option<&Path>, parent: &Path) -> 
     }
 }
 
-/// Puts the new worktree on its branch: a new one at `base`, or the
-/// existing one when `base` is `None`. `fill` is for a worktree that holds
-/// no files yet, where this is the checkout that writes all of them.
-fn switch(ui: &Ui, dest: &Path, branch: &str, base: Option<&Oid>, fill: bool) -> Result<()> {
+/// Runs `git checkout` in the new worktree with `target` as its arguments.
+/// `fill` is for a worktree that holds no files yet, where this is the
+/// checkout that writes all of them.
+fn checkout(ui: &Ui, dest: &Path, target: &[&str], fill: bool) -> Result<()> {
     // Git's own default is one worker; passing the core count is what makes
     // a full checkout parallel at all.
     let workers = format!(
@@ -263,10 +278,7 @@ fn switch(ui: &Ui, dest: &Path, branch: &str, base: Option<&Oid>, fill: bool) ->
     if fill {
         args.push("-f");
     }
-    match base {
-        Some(base) => args.extend(["-b", branch, base.as_str()]),
-        None => args.push(branch),
-    }
+    args.extend(target);
     git::stream(dest, &args, ui.quiet())
 }
 

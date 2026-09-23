@@ -242,9 +242,21 @@ fn fill_index(ui: &Ui, source: &Path, dest: &Path, since: SystemTime) -> Result<
 /// The checkout path's share of `.worktreeinclude`. Git wrote only tracked
 /// files, so the untracked ones the include file matches are copied in from
 /// the source.
+///
+/// A file already there is one the new branch tracks. Copying over it would
+/// leave the worktree dirty from the start, and on the clone path git
+/// refuses the same conflict, so this refuses too.
 pub fn copy_included(source: &Path, dest: &Path) -> Result<()> {
     for rel in exclude::included_paths(source)? {
         let (from, to) = (source.join(&rel), dest.join(&rel));
+        if to.symlink_metadata().is_ok() {
+            let why = std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "the new branch tracks this file, and .worktreeinclude asks for the \
+                 untracked copy in the main worktree; remove one of the two",
+            );
+            return Err(Error::io(&to, why));
+        }
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
         }
