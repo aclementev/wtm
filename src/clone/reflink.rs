@@ -8,7 +8,10 @@ use crate::error::{Error, Result};
 /// `ioctl(dst, FICLONE, src)` from `<linux/fs.h>`. It copies data and
 /// nothing else, so the caller copies mode and mtime. The mtime has to
 /// match the source or the index we write will not validate.
-const FICLONE: libc::c_ulong = 0x4004_9409;
+///
+/// `libc::Ioctl` because glibc takes the request as `unsigned long` and musl
+/// as `int`. The value fits both.
+const FICLONE: libc::Ioctl = 0x4004_9409;
 
 /// Per-file reflinks. Unlike `clonefile(2)` there is no whole-tree call, so
 /// this walks the subtree itself. `dst` must not exist; its parent must.
