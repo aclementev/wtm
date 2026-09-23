@@ -13,7 +13,7 @@ to build it: six features, each one something a user would notice.
 - **One feature per branch, merged when its criteria pass.** The criteria
   are written as tests; if one cannot be tested, say so in the pull request
   rather than skipping it.
-- **Write the tests named here, not more.** `TESTING.md` section 8 lists
+- **Write the tests named here, not more.** `TESTING.md` section 7 lists
   what is not worth testing.
 - **When the design is wrong, change the design document in the same
   commit.** Do not let code and specification drift.

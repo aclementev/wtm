@@ -76,7 +76,6 @@ proptest! {
         prop_assert!(worktree_dir.starts_with(&repo_dir));
         prop_assert_ne!(&worktree_dir, &repo_dir);
         prop_assert!(!worktree_dir.components().any(|c| c == Component::ParentDir));
-        prop_assert!(!name.trash_stem().contains('/'));
     }
 
     #[test]

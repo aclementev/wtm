@@ -46,7 +46,7 @@ $XDG_DATA_HOME/wtm/                     default ~/.local/share/wtm
     <repo-id>/
       <name>/                           one worktree; <name> may contain "/"
       .trash/                           removed worktrees awaiting unlink
-        <name>-<uuid>/
+        <name>-<pid>-<nanos>/
 $XDG_CONFIG_HOME/wtm/config.toml        global config
 <repo>/.wtm/config.toml                 project config (tracked or ignored, project's choice)
 <repo>/wtm-init.sh                      default init hook
@@ -662,7 +662,7 @@ refuse if dirty and not --force            (git status --porcelain non-empty)
 if --wait: delete synchronously, then prune, done
 if locked (only reachable with --force): git worktree unlock
 trash = <root>/<repo-id>/.trash            (mkdir -p)
-rename(<worktree>, <trash>/<name-with-slashes-replaced-by-->-<uuid>)
+rename(<worktree>, <trash>/<name, slashes as dashes>-<pid>-<nanos>)
     EXDEV or EBUSY -> delete synchronously instead, with a note
 git -C <main> worktree prune
 delete the branch only with -d (git branch -d) or -D (git branch -D); default keeps it
@@ -790,8 +790,7 @@ next to them, so `--help` and the skill share one description per flag.
 - Two `wtm new` in one repo at the same time: git serializes
   `worktree add` with its own locks, and the loser of a race for the same
   name fails at the destination-exists check. `wtm` takes no locks of its
-  own because it writes no shared files. Names are unique per repo, so the second call for the same name
-  fails at the destination-exists check.
+  own because it writes no shared files.
 - `wtm rm` while a hook or an agent is still running inside the worktree:
   the dirty check catches most cases; a clean tree with a live process is
   renamed under it, the process keeps working in the trash until the sweep
@@ -827,32 +826,7 @@ Both: `rename(2)` is atomic within a filesystem and O(1) in tree size.
 
 ## 13. Testing
 
-The strategy is in `TESTING.md`; this section keeps the acceptance criteria.
-
-- Unit: the index parser against `git ls-files -s` on v2, v3 and v4
-  fixtures (generate with `git update-index --index-version N`) in SHA-1
-  and SHA-256 repos; config precedence; name validation; trie logic for
-  the exclude walk.
-- Integration (macOS CI on APFS, Linux CI on a btrfs or XFS loop mount,
-  plus an ext4 job that must take the checkout path): build a synthetic
-  repo with `research/scripts/mkrepo.sh`-like generation at 5k files with
-  planted ignored files, `.worktreeinclude`, a submodule, a symlink to a
-  directory at the top level, and a dirty tracked file in the source. Assert:
-  `git worktree list` shows the worktree; `git status --porcelain` is empty;
-  the tree equals `git worktree add`'s tree plus the included files
-  (compare sorted `find` output); excluded paths are absent; the dirty
-  change did not carry; on the CoW path an untouched tracked file still has
-  the source's mtime, which is what tells a clone apart from a checkout
-  that reached the same contents; `git checkout <other-branch>` works; planted
-  mutations after creation are detected; `wtm rm` returns in under 100 ms
-  and the path is gone; the trash entry disappears after `wtm gc --wait`;
-  two concurrent `wtm gc --wait` runs on a populated trash both exit 0.
-- Reference oracles: `research/git/clone-worktree-excl.sh` and
-  `research/git/verify.sh` implement the same procedure in bash and Python
-  and can be run against the Rust binary's output for comparison.
-- Performance smoke: creation of a 100k-file synthetic repo must not be
-  slower than `git worktree add -c checkout.workers=8` by more than 30%,
-  and first `git status` must take under one second.
+The strategy and the acceptance tests are in `TESTING.md`.
 
 ## 14. Not in v1
 
@@ -866,22 +840,8 @@ the init hook or from the Spotlight Privacy settings.
 
 ## 15. Crate layout
 
-See `ARCHITECTURE.md` for modules, types and signatures. Summary:
-
-```
-src/main.rs            clap definitions; help and skill prose live here
-src/config.rs          TOML loading and precedence
-src/repo.rs            git discovery, subprocess wrapper with scrubbed env
-src/exclude.rs         exclude/include sets and tries
-src/clone/mod.rs       walk; clone/macos.rs (clonefile), clone/linux.rs (FICLONE)
-src/index.rs           parser and in-place stat fill
-src/create.rs          `wtm new` orchestration and rollback
-src/remove.rs          rename, synchronous delete
-src/reaper.rs          detach, priorities, sweep with flock
-src/shell.rs           wrapper text
-```
-
-Dependencies worth using: `clap`, `serde` + `toml`, `libc` (or `rustix`) for
-`clonefile`, `FICLONE`, `setsid`, `flock`, priorities; `sha1`/`sha2` for the
-index checksum; `uuid`. Avoid a git library: every git operation here is a
-subprocess call whose behaviour must match the user's git exactly.
+Modules, types and signatures are in `ARCHITECTURE.md`. Dependencies:
+`clap`, `serde` and `toml`, `serde_json`, `libc` for `clonefile`, `FICLONE`,
+`setsid`, `flock` and priorities, and `sha1` and `sha2` for the repo id and
+the index checksum. No git library: every git operation is a subprocess
+call whose behaviour must match the user's git exactly.

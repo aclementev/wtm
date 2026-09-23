@@ -10,8 +10,8 @@ const MAX_BYTES: usize = 200;
 /// `.` or `..` component, at most 200 bytes. A name may contain `/`, which
 /// becomes a directory separator on disk.
 ///
-/// Invariant: `Layout::worktree_dir(id, name)` is always strictly inside
-/// `Layout::repo_dir(id)`. The validation exists to guarantee that, since the
+/// Invariant: `Workspace::dir(name)` is always strictly inside
+/// `Workspace::repo_dir()`. The validation exists to guarantee that, since the
 /// name arrives from the command line and is joined onto a path we delete from.
 ///
 /// The name doubles as the branch name once `branch_prefix` is applied. Git
@@ -28,12 +28,6 @@ impl WorktreeName {
 
     pub fn as_path(&self) -> &Path {
         Path::new(&self.0)
-    }
-
-    /// Flattens the name for use as a single directory component in the trash,
-    /// where nesting would leave empty parents behind after a sweep.
-    pub fn trash_stem(&self) -> String {
-        self.0.replace('/', "--")
     }
 }
 

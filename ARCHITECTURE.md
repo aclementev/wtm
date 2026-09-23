@@ -13,8 +13,9 @@ hands. Names are binding unless a good reason is recorded in the code.
 - **Parse, don't validate.** Raw strings become typed values once, at the
   edge: `WorktreeName`, `RepoId`, `Config`. Everything downstream takes the
   typed value and cannot be handed a bad one.
-- **Platform code behind one trait.** `Cloner` has an APFS and a Linux
-  implementation plus a test double; nothing else contains `cfg(target_os)`.
+- **Platform code behind one trait.** Cloning goes through `Cloner`, with an
+  APFS and a Linux implementation. The only other `cfg(target_os)` is the
+  reaper's priority and file-flag calls.
 - **Side effects are orchestrated in one place per command.** `create.rs`
   and `remove.rs` sequence the steps and own rollback; the modules they call
   are pure or single-purpose.
@@ -53,7 +54,6 @@ src/
     mod.rs        `Cloner` trait, `Walker`, `Method`, `MethodDecision`, probe
     apfs.rs       clonefile(2) implementation
     reflink.rs    FICLONE per-file implementation
-    fake.rs       test double (plain copy, records calls)
   index.rs        `HashAlgo`, `Entry`, the parser, and the in-place stat fill
   hook.rs         `Hook` (what resolution came to), the one stat, `HookEnv`, execution
   create.rs       `wtm new` orchestration; `undo` after a failure
@@ -67,7 +67,7 @@ src/
 
 Dependency direction: `commands/*` and `create/remove` depend on
 everything below them; `git`, `index`, `clone`, `exclude`,
-`layout`, `name`, `repo` depend only on `error` and `std`/`libc`. `ui`
+`workspace`, `name`, `repo` depend only on `error` and `std`/`libc`. `ui`
 is passed in, never imported by leaf modules.
 
 ## 3. Key types
@@ -94,13 +94,12 @@ impl RepoId {
 
 /// A validated worktree name: `^[A-Za-z0-9._][A-Za-z0-9._/-]*$`, no `..`
 /// component, no empty component, at most 200 bytes. Doubles as the branch
-/// name after the prefix. Invariant: `layout.worktree_dir(id, &name)` is
-/// always strictly inside `layout.repo_dir(id)`.
+/// name after the prefix. Invariant: `Workspace::dir(&name)` is always
+/// strictly inside `Workspace::repo_dir()`.
 pub struct WorktreeName(String);
 impl FromStr for WorktreeName { type Err = Error; }
 impl WorktreeName {
     pub fn as_path(&self) -> &Path;          // slashes become directories
-    pub fn trash_stem(&self) -> String;      // slashes replaced by "--"
 }
 ```
 
@@ -129,13 +128,14 @@ pub fn view(git: &Git, workspace: &Workspace) -> Result<Vec<WorktreeView>>;
 /// Creation time: birth time of the worktree directory (mtime fallback).
 pub fn created_at(worktree: &Path) -> Option<SystemTime>;
 
-pub struct Git { exe: PathBuf, version: GitVersion }
+pub struct Git { version: GitVersion }
 impl Git {
-    pub fn new() -> Result<Git>;                     // finds git, checks >= 2.31
+    pub fn new() -> Result<Git>;                     // checks git >= 2.36
     /// Runs git with GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_COMMON_DIR,
     /// GIT_OBJECT_DIRECTORY removed from the environment.
     pub fn run(&self, cwd: &Path, args: &[&str]) -> Result<Output>;
-    pub fn run_z(&self, cwd: &Path, args: &[&str]) -> Result<Vec<Vec<u8>>>;   // NUL-separated stdout
+    pub fn stdout(&self, cwd: &Path, args: &[&str]) -> Result<String>;
+    pub fn succeeds(&self, cwd: &Path, args: &[&str]) -> bool;   // failure is an answer, not an error
     pub fn rev_parse(&self, cwd: &Path, rev: &str) -> Result<Oid>;
     pub fn status_is_clean(&self, cwd: &Path) -> Result<bool>;
     pub fn in_progress_operation(gitdir: &Path) -> Option<&'static str>;  // "rebase", "merge", ...
@@ -152,27 +152,30 @@ impl Git {
 pub enum Origin { Flag, Env(String), Project(PathBuf), Global(PathBuf), Default }
 pub struct Setting<T> { pub value: T, pub origin: Origin }
 
-/// Four settings, each scoped to whoever owns the decision (DESIGN.md 3).
+/// Five settings, each scoped to whoever owns the decision (DESIGN.md 3).
 /// Anything a caller decides per invocation is a flag, not a setting.
 pub struct Config {
     pub dir: Setting<PathBuf>,            // flag, env, global
     pub base: Setting<String>,            // flag, env, project
     pub branch_prefix: Setting<String>,   //       env, global
     pub fetch: Setting<bool>,             // flag, env, global
+    pub init: Setting<PathBuf>,           // flag, env, project, global; always absolute
 }
 
 /// Layers are merged key by key, each key seeing only the layers it accepts;
 /// a project file that sets a personal key is rejected naming file and key.
 pub fn load(flags: &FlagOverrides, env: &dyn Fn(&str) -> Option<String>,
-            project_file: Option<&Path>, global_file: Option<&Path>) -> Result<Config>;
+            project_file: Option<&Path>, global_file: Option<&Path>,
+            cwd: &Path, source: &Path) -> Result<Config>;   // bases for a relative `init`
 ```
 
 `RawConfig` (serde, all fields `Option`) is the file shape; unknown keys
 are rejected with `deny_unknown_fields`.
 
-`Context::build` replaces `config.dir` with its resolved form: git reports
-worktree paths with symlinks resolved, and `Layout::name_of` decides whether
-a worktree is ours by prefix-matching the data root against them.
+`run` passes `config.dir` through `canonical_root` before building the
+`Workspace`: git reports worktree paths with symlinks resolved, and
+`Workspace::name_of` decides whether a worktree is ours by prefix-matching
+the data root against them.
 
 ### 3.4 Workspace
 
@@ -231,14 +234,17 @@ so there is nothing for `clone_tree` to create and one entry to skip.
 
 ```rust
 pub enum Method { Cow, Checkout }
-pub struct MethodDecision { pub method: Method, pub reason: String }   // reason is shown by `new` at progress level and by doctor
+/// `reason` is shown by `new` and by doctor; `surprising` sends it to a
+/// warning instead of progress (a sparse source, not a filesystem that
+/// cannot clone).
+pub struct MethodDecision { pub method: Method, pub reason: String, pub surprising: bool }
 
 pub trait Cloner {
     /// Copy-on-write clone of a whole tree. `dst` must not exist; its parent must.
     fn clone_tree(&self, src: &Path, dst: &Path) -> Result<()>;
     /// Clone one regular file. Used inside mixed directories and by the probe.
     fn clone_file(&self, src: &Path, dst: &Path) -> Result<()>;
-    fn name(&self) -> &'static str;   // "clonefile", "reflink", "fake"
+    fn name(&self) -> &'static str;   // "clonefile", "reflink"
 }
 pub fn platform_cloner() -> Box<dyn Cloner>;
 /// `None` for a bare repository, which has no files to clone. Errors under
@@ -264,9 +270,7 @@ pub struct WalkStats { pub tree_clones: u64, pub dirs_recursed: u64 }
 `apfs.rs` implements `clone_tree` as one `clonefile` with `CLONE_NOFOLLOW`
 and `clone_file` the same way. `reflink.rs` implements `clone_tree` as a
 recursive walk calling `clone_file` (open, `FICLONE`, `fchmod`,
-`futimens`) and creating directories and symlinks. `fake.rs` copies with
-`std::fs`, so the walk can be tested on a filesystem that cannot clone.
-`WalkStats` already counts what a test would want from a recorder.
+`futimens`) and creating directories and symlinks.
 
 ### 3.7 Index
 
@@ -289,24 +293,27 @@ pub fn fill_stat(index: &Path, dest: &Path, source: &Path, algo: HashAlgo, since
 ```rust
 /// What was asked for, with configuration folded in. Nothing downstream of
 /// `derive` reads a setting.
-pub struct Request { pub dest: PathBuf, pub branch: String, pub base_spec: String,
-                     pub workers: usize, pub fetch: bool, pub clone_mode: CloneMode }
+pub struct Request { pub name: WorktreeName, pub dest: PathBuf, pub branch: String,
+                     pub base_spec: String, pub workers: usize, pub fetch: bool,
+                     pub clone_mode: CloneMode, pub fast_index: bool,
+                     pub hook: Option<Setting<PathBuf>> }   // None for --no-init
 
 /// What git and the filesystem say about a `Request`. Asked in one place.
 pub struct Observed { pub source_head: Option<Oid>, pub base: Option<Oid>,
                       pub branch: BranchState, pub in_progress: Option<&'static str>,
-                      pub dest_exists: bool }
+                      pub dest_exists: bool, pub hook: Hook }
 
 /// The three cases of DESIGN.md 4.1. As an enum rather than a flag beside an
 /// optional path, "absent but checked out somewhere" cannot be expressed.
 pub enum BranchState { Absent, Free, CheckedOut(PathBuf) }
 
 /// What will be done. Nothing optional, so acting needs no unwrapping.
-pub struct Plan { pub source_head: Oid, pub branch: BranchAction }
+pub struct Plan { pub source_head: Oid, pub branch: BranchAction, pub hook: Option<PathBuf> }
 pub enum BranchAction { Create { base: Oid }, Reuse }
 
 /// Per-invocation decisions that are not configuration (DESIGN.md 3).
-pub struct Options { pub branch: Option<String>, pub no_init: bool, pub clone_mode: CloneMode }
+pub struct Options { pub branch: Option<String>, pub no_init: bool, pub clone_mode: CloneMode,
+                     pub fast_index: bool }   // false under WTM_NO_FAST_INDEX
 
 pub fn derive(ws: &Workspace, config: &Config, name: WorktreeName,
               options: &Options) -> Result<Request>;                          // pure
@@ -401,24 +408,25 @@ Four steps, of which only the second and fourth touch the outside world.
 run -> Git::new -> Repo::discover -> config::load -> Workspace::new
   -> create::run
 
-     derive   (pure)  args + config      -> Request { dest, branch, base_spec, workers, fetch, fast_index }
+     derive   (pure)  args + config      -> Request { dest, branch, base_spec, workers, fetch, hook, ... }
      fetch    (io)    only when asked, before observing, so the base is fresh
      observe  (io)    every git and filesystem question, asked once
-                      -> Observed { source_head, base, branch: BranchState, in_progress, dest_exists }
+                      -> Observed { source_head, base, branch: BranchState, in_progress, dest_exists, hook }
      check    (pure)  the preconditions of DESIGN.md 5
-                      -> Plan { source_head, branch: BranchAction::{Create{base}, Reuse} }
-     act      (io)    git worktree add --no-checkout --detach
-                      -> clone::decide -> if Cow: ExcludeSet::compute -> Walker::run
+                      -> Plan { source_head, branch: BranchAction::{Create{base}, Reuse}, hook }
+     act      (io)    clone::decide
+                      -> git worktree add --no-checkout --detach
+                      -> if Cow:          ExcludeSet::compute -> Walker::run
                                           -> git read-tree HEAD
                                           -> empty submodules
                                           -> index::fill_stat, unless WTM_NO_FAST_INDEX
                                           -> git update-index --refresh, only if not filled
                                           -> git reset --hard
-                         else:            git checkout --detach with workers
+                         else:            git checkout --detach with workers, copy included files
                       -> git checkout -b
-                      -> hook::resolve -> hook::run
                       -> on error: undo
-  -> ui.emit(path) -> exit code from InitStatus
+  -> ui.emit(path)
+  -> hook::run, outside the undo: a failed hook keeps the worktree and exits 3
 ```
 
 `check` is pure so that the rule set, which grows in every later feature,
@@ -428,7 +436,7 @@ and between `observe` and `act` another process may invalidate any of them.
 ## 5. Things an implementer must not do
 
 - Add a second code path that creates worktrees (an MCP tool, a
-  `--worktree` flag elsewhere). Everything routes through `create::create`.
+  `--worktree` flag elsewhere). Everything routes through `create::run`.
 - Match `.gitignore` patterns in Rust. Ask git.
 - Use `std::fs::rename` fallbacks that copy. On `EXDEV` do the synchronous
   delete.
