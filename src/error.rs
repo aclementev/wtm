@@ -41,10 +41,12 @@ pub enum Error {
     #[error("could not remove everything under {}; the paths named above are still there", root.display())]
     Undeleted { root: PathBuf },
 
-    #[error("copy-on-write cloning is unavailable: {reason}")]
+    #[error(
+        "copy-on-write cloning is unavailable: {reason}. --clone-mode auto falls back to a checkout"
+    )]
     CloneUnsupported { reason: String },
 
-    #[error("branch {branch} is already checked out at {}", at.display())]
+    #[error("branch {branch} is already checked out at {}; pass --branch to use another", at.display())]
     BranchCheckedOut { branch: String, at: PathBuf },
 
     #[error("{}: {source}", path.display())]
