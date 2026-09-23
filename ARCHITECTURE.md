@@ -81,11 +81,9 @@ is passed in, never imported by leaf modules.
 /// sha256 over the canonicalized (symlinks resolved) absolute path of the
 /// main worktree, e.g. `monorepo-3f9a1c2e`. The basename keeps the data
 /// directory readable; the hash separates two repos with the same name.
-/// Moving or renaming a repo therefore yields a new id: its old worktrees
-/// become orphans, which `wtm ls --all` reports and `wtm gc` can remove.
-/// The mapping is one-way: recover the repo behind a `<repo-id>` directory
-/// by reading the `.git` file of any worktree inside it, never by reversing
-/// the hash.
+/// The id only decides where new worktrees go. Moving a repo yields a new
+/// one, and the worktrees made before stay under the old id, still ours:
+/// `Workspace::name_of` accepts any repo-id directory under the data root.
 pub struct RepoId(String);
 impl RepoId {
     pub fn for_main_worktree(canonical: &Path) -> RepoId;
@@ -125,6 +123,11 @@ pub struct GitWorktree { pub path: PathBuf, pub head: Option<Oid>, pub branch: O
 /// and its judgement is better than stat'ing the path ourselves.
 pub struct WorktreeView { pub git: GitWorktree, pub name: WorktreeName, pub created: Option<SystemTime>, pub base: Option<Oid> }
 pub fn view(git: &Git, workspace: &Workspace) -> Result<Vec<WorktreeView>>;
+/// This repo's worktrees that are ours, with their names.
+pub fn ours(git: &Git, workspace: &Workspace) -> Result<Vec<(WorktreeName, GitWorktree)>>;
+/// The one called `name`, after `git worktree repair` on it: a moved repo
+/// leaves the worktree's link back to it broken. Used by `cd`, `init`, `rm`.
+pub fn find(git: &Git, ui: &Ui, workspace: &Workspace, name: &WorktreeName) -> Result<GitWorktree>;
 /// Creation time: birth time of the worktree directory (mtime fallback).
 pub fn created_at(worktree: &Path) -> Option<SystemTime>;
 
@@ -181,16 +184,18 @@ the data root against them.
 
 ```rust
 /// Where one repository's worktrees live. `name_of` is the inverse of `dir`,
-/// and that pair is how "which worktrees are ours" is answered without a
-/// registry, so the two are defined together.
+/// and that pair is how worktrees are named without a registry, so the two
+/// are defined together. `name_of` accepts any repo-id directory under the
+/// root, not only this repo's current one, so a move loses nothing.
 pub struct Workspace { pub repo: Repo, root: PathBuf }
 impl Workspace {
     pub fn new(repo: Repo, root: PathBuf) -> Workspace;
-    pub fn root(&self) -> &Path;             // only `ls --all` and `gc` range over repos
+    pub fn root(&self) -> &Path;             // only `gc` ranges over repos
     pub fn repo_dir(&self) -> PathBuf;
     pub fn dir(&self, name: &WorktreeName) -> PathBuf;
     pub fn trash(&self) -> PathBuf;
     pub fn name_of(&self, path: &Path) -> Option<WorktreeName>;
+    pub fn prune_empty_parents(&self, path: &Path);   // up to, not including, the root
 }
 
 /// The root is canonicalized before use: git reports worktree paths with

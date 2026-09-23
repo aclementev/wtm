@@ -110,8 +110,9 @@ time, a clone does not.
   equals the commit `--base` named, including when the base is a tag or a
   raw sha; git's metadata directory name is read, not computed, proven by
   creating worktrees whose paths share a basename so git appends a digit,
-  then asserting both resolve correctly. Recovering the repo behind a
-  `<repo-id>` directory is tested with `wtm gc`, which is what needs it.
+  then asserting both resolve correctly. A repo that has moved still lists
+  and removes the worktrees made before the move, which sit under its old
+  repo-id.
 - `Config`: one table-driven test over every key and every subset of the
   layers that key accepts, asserting both the merged value and its `Origin`.
   A key is absent from a layer on purpose (`DESIGN.md` 3), so the table
